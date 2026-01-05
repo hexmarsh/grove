@@ -1,14 +1,18 @@
+#include <array>
 #include <cstdlib>
 #include <map>
 #include <optional>
+#include <set>
 #include <string.h>
 #include <string_view>
 #include <unordered_set>
 #include <utility>
 #include <vector>
 
+#define VULKAN_HPP_NO_STRUCT_CONSTRUCTORS
+#define VULKAN_HPP_NO_EXCEPTIONS
 #define VK_USE_PLATFORM_WIN32_KHR
-#include <vulkan/vulkan.h>
+#include <vulkan/vulkan_raii.hpp>
 #include <vulkan/vk_enum_string_helper.h>
 
 #include <windows.h>
@@ -19,47 +23,25 @@
 #include "grove/core/memory/box_ptr.hpp"
 #include "grove/core/typedefs.hpp"
 #include "grove/core/window.hpp"
+#include "grove/platform/win32_window.hpp"
 
 #define KiB(x) ((x) >> 10)
 #define MiB(x) ((x) >> 20)
 #define GiB(x) ((x) >> 30)
 
-VkResult vkCreateDebugUtilsMessengerEXT(
-	VkInstance instance,
-	const VkDebugUtilsMessengerCreateInfoEXT* createInfo,
-	const VkAllocationCallbacks* allocator,
-	VkDebugUtilsMessengerEXT* debugMessenger
-)
-{
-	auto func = (PFN_vkCreateDebugUtilsMessengerEXT)vkGetInstanceProcAddr(instance, "vkCreateDebugUtilsMessengerEXT");
-
-	if (func == nullptr)
-	{
-		return VK_ERROR_EXTENSION_NOT_PRESENT;
-	}
-
-	return func(instance, createInfo, allocator, debugMessenger);
-}
-
-void  vkDestroyDebugUtilsMessengerEXT(
-	VkInstance instance,
-	VkDebugUtilsMessengerEXT debugMessenger,
-	const VkAllocationCallbacks* allocator
-)
-{
-	auto func = (PFN_vkDestroyDebugUtilsMessengerEXT)vkGetInstanceProcAddr(instance, "vkDestroyDebugUtilsMessengerEXT");
-
-	if (func != nullptr)
-	{
-		func(instance, debugMessenger, allocator);
-	}
-}
-
 struct QueueFamilyIndices
 {
-	std::optional<grove::u32> graphicsFamily{ std::nullopt };
+	std::optional<grove::u32> graphicsFamily { std::nullopt };
+	std::optional<grove::u32> presentFamily  { std::nullopt };
 
-	bool IsComplete() const { return graphicsFamily.has_value(); }
+	bool IsComplete() const { return graphicsFamily.has_value() && presentFamily.has_value(); }
+};
+
+struct SwapChainSupportDetails
+{
+	vk::SurfaceCapabilitiesKHR capabilities;
+	std::vector<vk::SurfaceFormatKHR> formats;
+	std::vector<vk::PresentModeKHR> presentModes;
 };
 
 class HelloTriangleApplication
@@ -86,8 +68,8 @@ public:
 private:
 	void InitEngine()
 	{
-		grove = grove::BoxPtr<grove::GroveEngine>::Create();
-		grove->Init();
+		grove_ = grove::BoxPtr<grove::GroveEngine>::Create();
+		grove_->Init();
 
 		GRV_SET_LOG_LEVEL(trace);
 	}
@@ -101,202 +83,259 @@ private:
 			.title                { "GroveEngine" },
 			.width                { 800 },
 			.height               { 600 },
-			.enable_debug_console { true }
+			.enableDebugConsole   { true }
 		};
 
-		window = grove::Window::Create(windowCreateInfo);
+		window_ = grove::Window::Create(windowCreateInfo);
 	}
 
 	bool InitVulkan()
 	{
-		if (!CreateInstance())
+		vk::Result result { CreateInstance() };
+		if (result != vk::Result::eSuccess)
 		{
+			GRV_LOG_FATAL(GRV_CHANNEL(System), "Failed to create Vulkan Instance: {}", vk::to_string(result));
 			return false;
 		}
 
-		if (!SetupDebugMessenger())
+		result = SetupDebugMessenger();
+		if (result != vk::Result::eSuccess)
 		{
+			GRV_LOG_FATAL(GRV_CHANNEL(System), "Failed to setup Vulkan Debug Messenger: {}", vk::to_string(result));
 			return false;
 		}
 
-		CreateSurface();
-
-		if (!PickPhysicalDevice())
+		result = CreateSurface();
+		if (result != vk::Result::eSuccess)
 		{
+			GRV_LOG_FATAL(GRV_CHANNEL(System), "Failed to create Vulkan Surface: {}", vk::to_string(result));
 			return false;
 		}
 
-		if (!CreateLogicalDevice())
+		result = PickPhysicalDevice();
+		if (result != vk::Result::eSuccess)
 		{
+			GRV_LOG_FATAL(GRV_CHANNEL(System), "Failed to pick Vulkan Physical Device: {}", vk::to_string(result));
+			return false;
+		}
+
+		result = CreateLogicalDevice();
+		if (result != vk::Result::eSuccess)
+		{
+			GRV_LOG_FATAL(GRV_CHANNEL(System), "Failed to pick create Vulkan Logical Device: {}", vk::to_string(result));
 			return false;
 		}
 
 		return true;
 	}
 
-	bool CreateInstance()
+	vk::Result CreateInstance()
 	{
-		std::vector<const char*> validationLayers{ GetValidationLayers() };
-		if (!CheckValidationLayerSupport(validationLayers))
+		auto validationLayers{ GetValidationLayers() };
+		if (!enableValidationLayers_ && !IsValidationLayersSupported(validationLayers))
 		{
-			return false;
+			return vk::Result::eErrorLayerNotPresent;
+		}
+
+		std::vector<const char*> requiredLayers;
+		if (enableValidationLayers_)
+		{
+			requiredLayers.assign(validationLayers.begin(), validationLayers.end());
 		}
 
 		std::vector<const char*> extensions{ GetRequiredVulkanExtensions() };
-		if (!VerifyVulkanExtensions(extensions))
+		if (!IsRequiredVulkanExtensionsSupported(extensions))
 		{
-			return false;
+			return vk::Result::eErrorExtensionNotPresent;
 		}
 
-		VkApplicationInfo appInfo
+		constexpr vk::ApplicationInfo appInfo
 		{
-			.sType              { VK_STRUCTURE_TYPE_APPLICATION_INFO },
 			.pApplicationName   { "Hello Triangle" },
 			.applicationVersion { VK_MAKE_VERSION(1, 0, 0) },
 			.pEngineName        { "GroveEngine" },
 			.engineVersion      { VK_MAKE_VERSION(1, 0, 0) },
-			.apiVersion         { VK_API_VERSION_1_0 }
+			.apiVersion         { vk::ApiVersion14 }
 		};
 
-		VkInstanceCreateInfo createInfo
+		vk::InstanceCreateInfo createInfo
 		{
-			.sType                   { VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO },
 			.pApplicationInfo        { &appInfo },
+			.enabledLayerCount       { static_cast<grove::u32>(requiredLayers.size()) },
+			.ppEnabledLayerNames     { requiredLayers.data() },
 			.enabledExtensionCount   { static_cast<grove::u32>(extensions.size()) },
 			.ppEnabledExtensionNames { extensions.data() }
 		};
 
-		if (enableValidationLayers_)
+		auto [result, instance] = vk::createInstance(createInfo);
+		if (result != vk::Result::eSuccess)
 		{
-			createInfo.enabledLayerCount = validationLayers.size();
-			createInfo.ppEnabledLayerNames = validationLayers.data();
-
-			VkDebugUtilsMessengerCreateInfoEXT debugUtilsCreateInfo = GetDebugUtilsCreateInfo();
-			createInfo.pNext = (VkDebugUtilsMessengerCreateInfoEXT*)&debugUtilsCreateInfo;
-		}
-		else
-		{
-			createInfo.enabledLayerCount = 0;
-			createInfo.pNext = nullptr;
+			return result;
 		}
 
-		VkResult result{ vkCreateInstance(&createInfo, nullptr, &instance) };
-		if (result != VK_SUCCESS)
-		{
-			string_VkResult(result);
-			GRV_LOG_FATAL(GRV_CHANNEL(System), "Failed to create Vulkan instance: {}", string_VkResult(result));
-			return false;
-		}
-
-		return true;
+		instance_ = vk::raii::Instance(context_, instance);
+		return vk::Result::eSuccess;
 	}
 
-	bool SetupDebugMessenger()
+	vk::Result SetupDebugMessenger()
 	{
-		if (!enableValidationLayers_)
+		GRV_ASSERT(enableValidationLayers_);
+
+		vk::DebugUtilsMessengerCreateInfoEXT createInfo{ GetDebugUtilsCreateInfo() };
+
+		auto [result, dbg] = instance_.createDebugUtilsMessengerEXT(createInfo);
+		if (result != vk::Result::eSuccess)
 		{
-			return true;
+			return result;
 		}
 
-		VkDebugUtilsMessengerCreateInfoEXT debugUtilsCreateInfo{ GetDebugUtilsCreateInfo() };
-
-		VkResult result{ vkCreateDebugUtilsMessengerEXT(instance, &debugUtilsCreateInfo, nullptr, &debugMessenger_) };
-		if (result != VK_SUCCESS)
-		{
-			GRV_LOG_FATAL(GRV_CHANNEL(System), "Failed to create Vulkan Debug Messenger: {}", string_VkResult(result));
-			return false;
-		}
-
-		return true;
+		debugMessenger_ = std::move(dbg);
+		return vk::Result::eSuccess;
 	}
 
-	bool CreateSurface()
+	vk::Result CreateSurface()
 	{
-		return true;
-	}
+		auto* win32Window{ static_cast<grove::Win32Window*>(window_.Get())};
 
-	bool PickPhysicalDevice()
-	{
-		grove::u32 deviceCount{ 0 };
-		vkEnumeratePhysicalDevices(instance, &deviceCount, nullptr);
-
-		if (deviceCount == 0)
+		const vk::Win32SurfaceCreateInfoKHR createInfo
 		{
-			GRV_LOG_FATAL(GRV_CHANNEL(System), "Failed to find GPUs with Vulkan support.");
-			return false;
+			.hinstance { win32Window-> GetHInstance() },
+			.hwnd      { win32Window-> GetHWND() }
+		};
+
+		auto [result, surf] = instance_.createWin32SurfaceKHR(createInfo);
+		if (result != vk::Result::eSuccess)
+		{
+			return result;
 		}
 
-		std::vector<VkPhysicalDevice> devices(deviceCount);
-		vkEnumeratePhysicalDevices(instance, &deviceCount, devices.data());
+		surface_ = std::move(surf);
+		return vk::Result::eSuccess;
+	}
 
-		std::multimap<grove::u32, VkPhysicalDevice> candidates;
+	vk::Result PickPhysicalDevice()
+	{
+		auto [result, devices] = instance_.enumeratePhysicalDevices();
+		if (result != vk::Result::eSuccess)
+		{
+			return result;
+		}
+
+		if (devices.empty())
+		{
+			return vk::Result::eErrorInitializationFailed;
+		}
+
+		std::multimap<grove::u64, vk::raii::PhysicalDevice> candidates;
 		for (const auto& device : devices)
 		{
-			grove::u32 score{ RateDeviceSuitability(device) };
+			grove::u64 score{ RateDeviceSuitability(device) };
 			candidates.insert(std::make_pair(score, device));
 		}
 
 		if (candidates.rbegin()->first <= 0)
 		{
-			GRV_LOG_FATAL(GRV_CHANNEL(System), "Failed to find a suitable GPU for Vulkan.");
-			return false;
+			return vk::Result::eErrorInitializationFailed;
 		}
 
 		physicalDevice_ = candidates.rbegin()->second;
-		return true;
+		return vk::Result::eSuccess;
 	}
 
-	bool CreateLogicalDevice()
+	grove::u64 RateDeviceSuitability(vk::raii::PhysicalDevice physicalDevice)
 	{
-		std::vector<const char*> validationLayers{ GetValidationLayers() };
+		vk::PhysicalDeviceProperties       deviceProps { physicalDevice.getProperties() };
+		vk::PhysicalDeviceFeatures         deviceFeats { physicalDevice.getFeatures() };
+		vk::PhysicalDeviceMemoryProperties memProps    { physicalDevice.getMemoryProperties() };
+
+		QueueFamilyIndices indices = FindQueueFamilies(physicalDevice);
+
+		if (!indices.IsComplete() ||
+			!deviceFeats.geometryShader ||
+			!IsSupportsRequiredDeviceExtensions(physicalDevice))
+		{
+			return 0;
+		}
+
+		grove::u64 score{ 0 };
+
+		// prefer discrete gpu
+		if (deviceProps.deviceType == vk::PhysicalDeviceType::eDiscreteGpu)
+		{
+			score += 1000;
+		}
+
+		// prefer highest vram
+		vk::DeviceSize vramBytes{ 0 };
+		for (size_t i{ 0 }; i < memProps.memoryHeapCount; ++i)
+		{
+			if (memProps.memoryHeaps[i].flags & vk::MemoryHeapFlagBits::eDeviceLocal)
+			{
+				vramBytes += memProps.memoryHeaps[i].size;
+			}
+		}
+
+		score += GiB(vramBytes);
+		score += deviceProps.limits.maxImageDimension2D;
+
+		return score;
+	}
+
+	vk::Result CreateLogicalDevice()
+	{
+		auto validationLayers{ GetValidationLayers() };
 		QueueFamilyIndices indices{ FindQueueFamilies(physicalDevice_) };
 
-		if (!indices.IsComplete())
+		std::vector<vk::DeviceQueueCreateInfo> queueCreateInfos;
+		std::set<grove::u32> uniqueQueueFamilies
 		{
-			GRV_LOG_FATAL(GRV_CHANNEL(System), "Failed to find required queue families.");
-			return false;
-		}
+			indices.graphicsFamily.value(),
+			indices.presentFamily.value()
+		};
 
 		grove::f32 queuePriority{ 1.0f };
-
-		VkDeviceQueueCreateInfo queueCreateInfo
+		for (grove::u32 queueFamily : uniqueQueueFamilies)
 		{
-			.sType            { VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO },
-			.queueFamilyIndex { indices.graphicsFamily.value() },
-			.queueCount       { 1 },
-			.pQueuePriorities { &queuePriority }
+			vk::DeviceQueueCreateInfo queueCreateInfo
+			{
+				.queueFamilyIndex { queueFamily },
+				.queueCount       { 1 },
+				.pQueuePriorities { &queuePriority }
+			};
+
+			queueCreateInfos.emplace_back(queueCreateInfo);
+		}
+
+		std::array<const char*, 1> deviceExtensions{ GetRequiredDeviceExtensions() };
+
+		vk::StructureChain<vk::PhysicalDeviceFeatures2, vk::PhysicalDeviceVulkan13Features, vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT> featureChain
+		{
+			{ },
+			{ .dynamicRendering { true } },
+			{ .extendedDynamicState { true } }
 		};
 
-		VkPhysicalDeviceFeatures deviceFeatures{};
-
-		VkDeviceCreateInfo createInfo
+		vk::DeviceCreateInfo createInfo
 		{
-			.sType                 { VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO },
-			.queueCreateInfoCount  { 1 },
-			.pQueueCreateInfos     { &queueCreateInfo },
-			.enabledExtensionCount { 0 },
-			.pEnabledFeatures      { &deviceFeatures }
+			.pNext                   { &featureChain.get<vk::PhysicalDeviceFeatures2>() },
+			.queueCreateInfoCount    { static_cast<grove::u32>(queueCreateInfos.size()) },
+			.pQueueCreateInfos       { queueCreateInfos.data() },
+			.enabledExtensionCount   { static_cast<grove::u32>(deviceExtensions.size()) },
+			.ppEnabledExtensionNames { deviceExtensions.data() }
 		};
 
-		if (enableValidationLayers_)
+		auto [result, dev] = physicalDevice_.createDevice(createInfo);
+		if (result != vk::Result::eSuccess)
 		{
-			createInfo.enabledLayerCount = validationLayers.size();
-			createInfo.ppEnabledLayerNames = validationLayers.data();
-		}
-		else
-		{
-			createInfo.enabledLayerCount = 0;
+			return result;
 		}
 
-		if (vkCreateDevice(physicalDevice_, &createInfo, nullptr, &device) != VK_SUCCESS)
-		{
-			GRV_LOG_FATAL(GRV_CHANNEL(System), "Failed to create logical device.");
-			return false;
-		}
+		device_ = std::move(dev);
 
-		vkGetDeviceQueue(device, indices.graphicsFamily.value(), 0, &graphicsQueue_);
+		graphicsQueue_ = device_.getQueue(indices.graphicsFamily.value(), 0);
+		presentQueue_  = device_.getQueue(indices.presentFamily.value(), 0);
 
-		return true;
+		return vk::Result::eSuccess;
 	}
 
 	void MainLoop()
@@ -311,193 +350,81 @@ private:
 
 	void Cleanup()
 	{
-		if (device != VK_NULL_HANDLE)
-		{
-			vkDestroyDevice(device, nullptr);
-		}
+		window_.Reset();
 
-		if (enableValidationLayers_ && debugMessenger_ != VK_NULL_HANDLE)
+		if (grove_)
 		{
-			vkDestroyDebugUtilsMessengerEXT(instance, debugMessenger_, nullptr);
-		}
-
-		if (instance != VK_NULL_HANDLE)
-		{
-			vkDestroyInstance(instance, nullptr);
-		}
-
-		window.Reset();
-
-		if (grove)
-		{
-			grove->Shutdown();
-			grove.Reset();
+			grove_->Shutdown();
+			grove_.Reset();
 		}
 	}
 
-	QueueFamilyIndices FindQueueFamilies(VkPhysicalDevice device)
+	QueueFamilyIndices FindQueueFamilies(vk::raii::PhysicalDevice physicalDevice)
 	{
 		QueueFamilyIndices indices{};
 
-		grove::u32 queueFamilyCount{ 0 };
-		vkGetPhysicalDeviceQueueFamilyProperties(device, &queueFamilyCount, nullptr);
+		std::vector<vk::QueueFamilyProperties> queueFamilies{ physicalDevice.getQueueFamilyProperties() };
 
-		std::vector<VkQueueFamilyProperties> queueFamilies(queueFamilyCount);
-		vkGetPhysicalDeviceQueueFamilyProperties(device, &queueFamilyCount, queueFamilies.data());
-
-		for (grove::u32 i = 0; i < queueFamilies.size(); ++i)
+		for (grove::u32 i{ 0 }; i < queueFamilies.size(); ++i)
 		{
 			if (indices.IsComplete())
 			{
 				break;
 			}
 
-			if (queueFamilies[i].queueFlags & VK_QUEUE_GRAPHICS_BIT)
+			if ((queueFamilies[i].queueFlags & vk::QueueFlagBits::eGraphics) != static_cast<vk::QueueFlags>(0))
 			{
 				indices.graphicsFamily = i;
+			}
+
+			auto [res, presentSupport] = physicalDevice.getSurfaceSupportKHR(i, surface_);
+
+			if (presentSupport)
+			{
+				indices.presentFamily = i;
 			}
 		}
 
 		return indices;
 	}
 
-	grove::u32 RateDeviceSuitability(VkPhysicalDevice device)
+	bool IsSupportsRequiredDeviceExtensions(vk::raii::PhysicalDevice physicalDevice)
 	{
-		VkPhysicalDeviceProperties deviceProps{};
-		vkGetPhysicalDeviceProperties(device, &deviceProps);
+		auto [res, availableExtensions] = physicalDevice.enumerateDeviceExtensionProperties();
 
-		VkPhysicalDeviceFeatures deviceFeats{};
-		vkGetPhysicalDeviceFeatures(device, &deviceFeats);
+		std::array<const char*, 1> deviceExtensions{ GetRequiredDeviceExtensions() };
 
-		VkPhysicalDeviceMemoryProperties memProps{};
-		vkGetPhysicalDeviceMemoryProperties(device, &memProps);
+		std::unordered_set<std::string_view> requiredExtensions(deviceExtensions.begin(), deviceExtensions.end());
 
-		QueueFamilyIndices indices = FindQueueFamilies(device);
-
-		if (!indices.IsComplete())
+		for (const auto& extension : availableExtensions)
 		{
-			return 0;
+			requiredExtensions.erase(extension.extensionName);
 		}
 
-		if (!deviceFeats.geometryShader)
-		{
-			return 0;
-		}
-
-		grove::u64 score{ 0 };
-
-		// prefer discrete gpu
-		if (deviceProps.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU)
-		{
-			score += 1000;
-		}
-
-		// prefer highest vram
-		VkDeviceSize vramBytes{ 0 };
-		for (size_t i = 0; i < memProps.memoryHeapCount; ++i)
-		{
-			if (memProps.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT)
-			{
-				vramBytes += memProps.memoryHeaps[i].size;
-			}
-		}
-
-		score += GiB(vramBytes);
-		score += deviceProps.limits.maxImageDimension2D;
-
-		return score;
+		return requiredExtensions.empty();
 	}
 
-	VkDebugUtilsMessengerCreateInfoEXT GetDebugUtilsCreateInfo()
+	bool IsRequiredVulkanExtensionsSupported(const std::vector<const char*>& requiredExtensions)
 	{
-		VkDebugUtilsMessengerCreateInfoEXT debugUtilsCreateInfo
+		auto [result, extProps] = vk::enumerateInstanceExtensionProperties();
+
+		if (result != vk::Result::eSuccess)
 		{
-			.sType			 { VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT },
-
-			.messageSeverity { VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT |
-                               VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
-			                   VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT },
-
-			.messageType	 { VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT    |
-							   VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT | 
-			                   VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT },
-
-			.pfnUserCallback { DebugUtilsMessengerCallback }
-		};
-
-		return debugUtilsCreateInfo;
-	}
-
-	static VKAPI_ATTR VkBool32 VKAPI_CALL DebugUtilsMessengerCallback(
-		VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
-		VkDebugUtilsMessageTypeFlagsEXT messageType,
-		const VkDebugUtilsMessengerCallbackDataEXT* callbackData,
-		void* user_data
-	)
-	{
-		if (messageSeverity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT)
-		{
-			GRV_LOG_TRACE(GRV_CHANNEL(System), "{} - {}: {}", callbackData->messageIdNumber, callbackData->pMessageIdName, callbackData->pMessage);
-		}
-		else if (messageSeverity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT)
-		{
-			GRV_LOG_INFO(GRV_CHANNEL(System), "{} - {}: {}", callbackData->messageIdNumber, callbackData->pMessageIdName, callbackData->pMessage);
-		}
-		else if (messageSeverity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT)
-		{
-			GRV_LOG_WARN(GRV_CHANNEL(System), "{} - {}: {}", callbackData->messageIdNumber, callbackData->pMessageIdName, callbackData->pMessage);
-		}
-		else if (messageSeverity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT)
-		{
-			GRV_LOG_ERROR(GRV_CHANNEL(System), "{} - {}: {}", callbackData->messageIdNumber, callbackData->pMessageIdName, callbackData->pMessage);
-		}
-
-		return VK_FALSE;
-	}
-
-	std::vector<const char*> GetRequiredVulkanExtensions() const
-	{
-		std::vector<const char*> extensions
-		{
-			"VK_KHR_surface",
-			"VK_KHR_win32_surface"
-		};
-
-		if (enableValidationLayers_)
-		{
-			extensions.emplace_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
-		}
-
-		return extensions;
-	}
-
-	bool VerifyVulkanExtensions(const std::vector<const char*>& requiredExtensions)
-	{
-		grove::u32 extensionCount{ 0 };
-		VkResult res = vkEnumerateInstanceExtensionProperties(nullptr, &extensionCount, nullptr);
-		if (res != VK_SUCCESS)
-		{
-			GRV_LOG_FATAL(GRV_CHANNEL(System), "Failed to enumerate Vulkan instance extension properties: {}", static_cast<int>(res));
+			GRV_LOG_ERROR(GRV_CHANNEL(System), "Failed to enumerate Vulkan instance extension properties: {}", vk::to_string(result));
 			return false;
 		}
 
-		std::vector<VkExtensionProperties> extensions(extensionCount);
-		res = vkEnumerateInstanceExtensionProperties(nullptr, &extensionCount, extensions.data());
-		if (res != VK_SUCCESS)
-		{
-			GRV_LOG_FATAL(GRV_CHANNEL(System), "Failed to enumerate Vulkan instance extension properties: {}", static_cast<int>(res));
-			return false;
-		}
-
-		GRV_LOG_TRACE(GRV_CHANNEL(System), "Found {} available Vulkan extensions(s):", extensionCount);
+		GRV_LOG_TRACE(GRV_CHANNEL(System), "Found {} available Vulkan extensions(s):", extProps.size());
 
 		std::unordered_set<std::string_view> availableExtensions;
-		availableExtensions.reserve(extensions.size());
+		availableExtensions.reserve(extProps.size());
 
-		for (const auto& ext : extensions)
+		for (const auto& ext : extProps)
 		{
-			GRV_LOG_TRACE(GRV_CHANNEL(System), "    {}", ext.extensionName);
-			availableExtensions.emplace(ext.extensionName);
+			size_t len = strnlen(ext.extensionName, vk::MaxExtensionNameSize);
+			std::string_view sv{ ext.extensionName, len };
+			GRV_LOG_TRACE(GRV_CHANNEL(System), "    {}", sv);
+			availableExtensions.emplace(sv);
 		}
 
 		std::vector<std::string_view> missing;
@@ -512,33 +439,115 @@ private:
 
 		if (!missing.empty())
 		{
-			GRV_LOG_FATAL(GRV_CHANNEL(System), "Missing {} required Vulkan extension(s).", missing.size());
+			GRV_LOG_ERROR(GRV_CHANNEL(System), "Missing {} required Vulkan extension(s).", missing.size());
 			return false;
 		}
 
 		return true;
 	}
 
-	std::vector<const char*> GetValidationLayers()
+	vk::DebugUtilsMessengerCreateInfoEXT GetDebugUtilsCreateInfo()
 	{
-		return std::vector<const char*>{ "VK_LAYER_KHRONOS_validation" };
+		vk::DebugUtilsMessageSeverityFlagsEXT severityFlags
+		{
+			vk::DebugUtilsMessageSeverityFlagBitsEXT::eVerbose |
+			vk::DebugUtilsMessageSeverityFlagBitsEXT::eWarning |
+			vk::DebugUtilsMessageSeverityFlagBitsEXT::eError
+		};
+
+		vk::DebugUtilsMessageTypeFlagsEXT messageTypeFlags
+		{
+			vk::DebugUtilsMessageTypeFlagBitsEXT::eGeneral     |
+			vk::DebugUtilsMessageTypeFlagBitsEXT::ePerformance |
+			vk::DebugUtilsMessageTypeFlagBitsEXT::eValidation
+		};
+
+		vk::DebugUtilsMessengerCreateInfoEXT createInfo
+		{
+			.messageSeverity { severityFlags },
+			.messageType     { messageTypeFlags },
+			.pfnUserCallback { &DebugCallback }
+		};
+
+		return createInfo;
 	}
 
-	bool CheckValidationLayerSupport(const std::vector<const char*>& validationLayers)
+	static VKAPI_ATTR vk::Bool32 VKAPI_CALL DebugCallback(
+		vk::DebugUtilsMessageSeverityFlagBitsEXT severity,
+		vk::DebugUtilsMessageTypeFlagsEXT type,
+		const vk::DebugUtilsMessengerCallbackDataEXT* pCallbackData,
+		void* userData
+	)
 	{
-		grove::u32 layerCount;
-		vkEnumerateInstanceLayerProperties(&layerCount, nullptr);
+		if (severity & vk::DebugUtilsMessageSeverityFlagBitsEXT::eVerbose)
+		{
+			GRV_LOG_TRACE(GRV_CHANNEL(System), "{} - {}: {}", pCallbackData->messageIdNumber, pCallbackData->pMessageIdName, pCallbackData->pMessage);
+		}
+		else if (severity & vk::DebugUtilsMessageSeverityFlagBitsEXT::eInfo)
+		{
+			GRV_LOG_INFO(GRV_CHANNEL(System), "{} - {}: {}", pCallbackData->messageIdNumber, pCallbackData->pMessageIdName, pCallbackData->pMessage);
+		}
+		else if (severity & vk::DebugUtilsMessageSeverityFlagBitsEXT::eWarning)
+		{
+			GRV_LOG_WARN(GRV_CHANNEL(System), "{} - {}: {}", pCallbackData->messageIdNumber, pCallbackData->pMessageIdName, pCallbackData->pMessage);
+		}
+		else if (severity & vk::DebugUtilsMessageSeverityFlagBitsEXT::eError)
+		{
+			GRV_LOG_ERROR(GRV_CHANNEL(System), "{} - {}: {}", pCallbackData->messageIdNumber, pCallbackData->pMessageIdName, pCallbackData->pMessage);
+		}
 
-		std::vector<VkLayerProperties> availableLayers(layerCount);
-		vkEnumerateInstanceLayerProperties(&layerCount, availableLayers.data());
+		return vk::False;
+	}
+
+	std::vector<const char*> GetRequiredVulkanExtensions() const
+	{
+		std::vector<const char*> extensions
+		{
+			vk::KHRSurfaceExtensionName,
+			vk::KHRWin32SurfaceExtensionName
+		};
+
+		if (enableValidationLayers_)
+		{
+			extensions.emplace_back(vk::EXTDebugUtilsExtensionName);
+		}
+
+		return extensions;
+	}
+
+	constexpr std::array<const char*, 1> GetRequiredDeviceExtensions()
+	{
+		return
+		{
+			vk::KHRSwapchainExtensionName
+		};
+	}
+
+	constexpr std::array<const char*, 1> GetValidationLayers()
+	{
+		return 
+		{ 
+			"VK_LAYER_KHRONOS_validation" 
+		};
+	}
+
+	template <size_t N>
+	bool IsValidationLayersSupported(const std::array<const char*, N>& validationLayers)
+	{
+		auto [result, availableLayers] = vk::enumerateInstanceLayerProperties();
+		if (result != vk::Result::eSuccess)
+		{
+			GRV_LOG_ERROR(GRV_CHANNEL(System), "Failed to enumerate Vulkan Instance Layer Properties: {}", vk::to_string(result));
+			return false;
+		}
 
 		for (const char* layerName : validationLayers)
 		{
 			bool layerFound{ false };
 
-			for (const auto& layer_properties : availableLayers)
+			for (const auto& layerProperties : availableLayers)
 			{
-				if (strcmp(layerName, layer_properties.layerName) == 0)
+				if (strcmp(layerName, layerProperties.layerName) == 0)
 				{
 					layerFound = true;
 					break;
@@ -556,15 +565,21 @@ private:
 	}
 
 private:
-	grove::BoxPtr<grove::GroveEngine> grove;
-	grove::BoxPtr<grove::Window>      window;
-	VkInstance                        instance                 { VK_NULL_HANDLE };
-	VkDebugUtilsMessengerEXT          debugMessenger_          { VK_NULL_HANDLE };
-	VkSurfaceKHR                      surface                  { VK_NULL_HANDLE };
-	VkPhysicalDevice                  physicalDevice_          { VK_NULL_HANDLE };
-	VkDevice                          device                   { VK_NULL_HANDLE };
-	VkQueue                           graphicsQueue_           { VK_NULL_HANDLE };
+	grove::BoxPtr<grove::GroveEngine> grove_;
+	grove::BoxPtr<grove::Window>      window_;
+	vk::raii::Context                 context_;
+	vk::raii::Instance                instance_               { nullptr };
+	vk::raii::DebugUtilsMessengerEXT  debugMessenger_         { nullptr };
+	vk::raii::SurfaceKHR              surface_                { nullptr };
+	vk::raii::PhysicalDevice          physicalDevice_         { nullptr };
+	vk::raii::Device                  device_                 { nullptr };
+	vk::raii::Queue                   graphicsQueue_          { nullptr };
+	vk::raii::Queue                   presentQueue_           { nullptr };
+	#if defined(NDEBUG)
+	bool                              enableValidationLayers_ { false };
+	#else
 	bool                              enableValidationLayers_ { true };
+	#endif
 };
 
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine, int nCmdShow)

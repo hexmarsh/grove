@@ -1,6 +1,6 @@
 #pragma once
 
-#include "grove/platform/platform_detection.hpp"
+#include "grove/core/config.h"
 
 #include <algorithm>
 #include <format>
@@ -13,7 +13,7 @@
 #include <cstddef>
 #include <cstdint>
 
-#ifdef GRV_PLATFORM_WINDOWS
-#  include <windows.h>
+#if GRV_PLATFORM_WINDOWS
+	#include <windows.h>
 #endif
 

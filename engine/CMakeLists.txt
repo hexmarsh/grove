@@ -4,10 +4,10 @@ find_package(Vulkan REQUIRED)
 
 target_sources(grove_engine
 	PRIVATE
-		
 		src/core/logging/logger.cpp
 		src/core/window.cpp 
-		src/platform/win32_window.cpp "src/core/grove_engine.cpp")
+		src/platform/win32_window.cpp 
+		src/core/grove_engine.cpp)
 
 target_include_directories(grove_engine
 	PUBLIC

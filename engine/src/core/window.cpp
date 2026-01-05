@@ -1,8 +1,7 @@
+#include "grove/core/config.h"
 #include "grove/core/window.hpp"
 
-#include "grove/platform/platform_detection.hpp"
-
-#ifdef GRV_PLATFORM_WINDOWS
+#if GRV_PLATFORM_WINDOWS
 #include "grove/platform/win32_window.hpp"
 #endif
 
@@ -13,7 +12,7 @@ namespace grove
 {
 	BoxPtr<Window> Window::Create(const WindowCreateInfo& createInfo)
 	{
-#ifdef GRV_PLATFORM_WINDOWS
+#if GRV_PLATFORM_WINDOWS
 		return BoxPtr<Win32Window>::Create(createInfo);
 #else
 		GRV_ASSERT(false, "Unknown Platform");

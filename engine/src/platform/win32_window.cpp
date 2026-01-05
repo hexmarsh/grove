@@ -9,7 +9,7 @@ namespace grove
 {
 	namespace
 	{
-		void open_debug_console()
+		void OpenDebugConsole()
 		{
 			AllocConsole();
 
@@ -22,7 +22,7 @@ namespace grove
 			SetConsoleTitle(TEXT("GroveEngine Debug Console"));
 		}
 
-		void close_debug_console()
+		void CloseDebugConsole()
 		{
 			FreeConsole();
 		}
@@ -45,10 +45,18 @@ namespace grove
 
 	void Win32Window::Init(const WindowCreateInfo& createInfo)
 	{
-		if (createInfo.enable_debug_console)
+		if (createInfo.enableDebugConsole)
 		{
-			open_debug_console();
+			OpenDebugConsole();
 		}
+
+		GRV_LOG_INFO(
+			GRV_CHANNEL(System),
+			"Creating window {} ({}, {})",
+			createInfo.title,
+			createInfo.width,
+			createInfo.height
+		);
 
 		constexpr LPCTSTR CLASS_NAME = TEXT("GroveEngineWindowClass");
 
@@ -90,7 +98,7 @@ namespace grove
 	{
 		if (hwnd_)
 		{
-			close_debug_console();
+			CloseDebugConsole();
 			DestroyWindow(hwnd_);
 			hwnd_ = nullptr;
 		}

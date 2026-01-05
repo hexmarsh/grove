@@ -12,7 +12,7 @@ namespace grove
 		std::string title;
 		u32 width, height;
 
-		bool enable_debug_console = false;
+		bool enableDebugConsole = false;
 	};
 
 	class Window

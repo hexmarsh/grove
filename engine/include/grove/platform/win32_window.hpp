@@ -14,6 +14,9 @@ namespace grove
 
 		void *GetNativeHandle() const override;
 
+		HINSTANCE GetHInstance() const { return hinstance_; }
+		HWND GetHWND() const { return hwnd_; }
+
 	private:
 		void Init(const WindowCreateInfo &createInfo);
 		void Shutdown();
