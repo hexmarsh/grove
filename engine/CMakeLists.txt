@@ -1,13 +1,12 @@
 add_library(grove_engine)
 
-find_package(Vulkan REQUIRED)
-
 target_sources(grove_engine
 	PRIVATE
 		src/core/logging/logger.cpp
 		src/core/window.cpp 
-		src/platform/win32_window.cpp 
-		src/core/grove_engine.cpp)
+		src/core/grove_engine.cpp
+		src/platform/glfw_window.cpp
+)
 
 target_include_directories(grove_engine
 	PUBLIC
@@ -28,10 +27,16 @@ if(WIN32)
 			NOMINMAX
 	)
 
-	target_compile_options(grove_engine PUBLIC "/Zc:preprocessor")
+	target_compile_options(grove_engine
+		PUBLIC
+			"/Zc:preprocessor"
+	)
 endif()
 
 target_link_libraries(grove_engine
 	PUBLIC
+		glfw
+		glm::glm
 		Vulkan::Vulkan
+		Vulkan::Headers
 )

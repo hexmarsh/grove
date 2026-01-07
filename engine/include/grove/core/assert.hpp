@@ -2,9 +2,7 @@
 
 #include <source_location>
 #include <format>
-#include "grove/core/config.h"
-#include "grove/core/logging.hpp"
-#include "grove/core/logging/log_macros.hpp"
+#include "grove/core/config.hpp"
 
 #if defined(GRV_ENABLE_ASSERTS)
 	#if defined(GRV_COMPILER_MSVC)

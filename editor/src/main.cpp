@@ -8,26 +8,124 @@
 #include <unordered_set>
 #include <utility>
 #include <vector>
+#include <span>
 
 #define VULKAN_HPP_NO_STRUCT_CONSTRUCTORS
 #define VULKAN_HPP_NO_EXCEPTIONS
 #define VK_USE_PLATFORM_WIN32_KHR
 #include <vulkan/vulkan_raii.hpp>
-#include <vulkan/vk_enum_string_helper.h>
 
-#include <windows.h>
-
+#include "grove/core/logging.hpp"
+#include "grove/core/memory.hpp"
+#include "grove/core/window.hpp"
 #include "grove/core/assert.hpp"
 #include "grove/core/grove_engine.hpp"
-#include "grove/core/logging/log_macros.hpp"
-#include "grove/core/memory/box_ptr.hpp"
 #include "grove/core/typedefs.hpp"
-#include "grove/core/window.hpp"
-#include "grove/platform/win32_window.hpp"
+#include "grove/platform/glfw_window.hpp"
 
 #define KiB(x) ((x) >> 10)
 #define MiB(x) ((x) >> 20)
 #define GiB(x) ((x) >> 30)
+
+namespace
+{
+	constexpr std::array kValidationLayers
+	{ 
+		"VK_LAYER_KHRONOS_validation" 
+	};
+
+	constexpr std::array kDeviceExtensions
+	{
+		vk::KHRSwapchainExtensionName,
+		vk::KHRSpirv14ExtensionName,
+		vk::KHRSynchronization2ExtensionName,
+		vk::KHRCreateRenderpass2ExtensionName
+	};
+
+	constexpr std::array kRequiredInstanceExtensions
+	{
+		vk::KHRSurfaceExtensionName,
+		vk::KHRWin32SurfaceExtensionName
+	};
+
+	template<typename T, typename GetNameFunc>
+	bool ValidateSupport(
+		std::span<const T> available,
+		std::span<const char* const> required,
+		const char* typeName,
+		GetNameFunc getName)
+	{
+		std::unordered_set<std::string_view> requiredSet(required.begin(), required.end());
+
+		for (const auto& item : available)
+		{
+			requiredSet.erase(getName(item));
+		}
+
+		if (!requiredSet.empty())
+		{
+			for (const auto& missing : requiredSet)
+			{
+				GRV_LOG_ERROR(GRV_CHANNEL(System), "Required {} '{}' is not available.", typeName, missing);
+			}
+			GRV_LOG_ERROR(GRV_CHANNEL(System), "Missing {} required {}(s).", requiredSet.size(), typeName);
+			return false;
+		}
+
+		return true;
+	}
+
+	bool AreValidationLayersSupported(std::span<const char* const> layers)
+	{
+		auto [result, availableLayers] = vk::enumerateInstanceLayerProperties();
+		if (result != vk::Result::eSuccess)
+		{
+			GRV_LOG_ERROR(GRV_CHANNEL(System), "Failed to enumerate Vulkan Instance Layer Properties: {}", vk::to_string(result));
+			return false;
+		}
+
+		return ValidateSupport<vk::LayerProperties>(
+			std::span{availableLayers},
+			layers,
+			"validation layer",
+			[](const vk::LayerProperties& prop) -> std::string_view { return prop.layerName; }
+		);
+	}
+
+	bool AreInstanceExtensionsSupported(std::span<const char* const> extensions)
+	{
+		auto [result, availableExtensions] = vk::enumerateInstanceExtensionProperties();
+		if (result != vk::Result::eSuccess)
+		{
+			GRV_LOG_ERROR(GRV_CHANNEL(System), "Failed to enumerate Vulkan instance extension properties: {}", vk::to_string(result));
+			return false;
+		}
+
+		return ValidateSupport<vk::ExtensionProperties>(
+			std::span{availableExtensions},
+			extensions,
+			"instance extension",
+			[](const vk::ExtensionProperties& prop) -> std::string_view { return prop.extensionName; }
+		);
+	}
+
+	bool AreDeviceExtensionsSupported(vk::raii::PhysicalDevice device, std::span<const char* const> extensions)
+	{
+		auto [result, availableExtensions] = device.enumerateDeviceExtensionProperties();
+		if (result != vk::Result::eSuccess)
+		{
+			GRV_LOG_ERROR(GRV_CHANNEL(System), "Failed to enumerate device extension properties: {}", vk::to_string(result));
+			return false;
+		}
+
+		return ValidateSupport<vk::ExtensionProperties>(
+			std::span{availableExtensions},
+			extensions,
+			"device extension",
+			[](const vk::ExtensionProperties& prop) -> std::string_view { return prop.extensionName; }
+		);
+	}
+}
 
 struct QueueFamilyIndices
 {
@@ -91,7 +189,7 @@ private:
 
 	bool InitVulkan()
 	{
-		vk::Result result { CreateInstance() };
+		vk::Result result = CreateInstance();
 		if (result != vk::Result::eSuccess)
 		{
 			GRV_LOG_FATAL(GRV_CHANNEL(System), "Failed to create Vulkan Instance: {}", vk::to_string(result));
@@ -131,20 +229,18 @@ private:
 
 	vk::Result CreateInstance()
 	{
-		auto validationLayers{ GetValidationLayers() };
-		if (!enableValidationLayers_ && !IsValidationLayersSupported(validationLayers))
+		if (enableValidationLayers_ && !AreValidationLayersSupported(kValidationLayers))
 		{
 			return vk::Result::eErrorLayerNotPresent;
 		}
 
-		std::vector<const char*> requiredLayers;
+		std::vector<const char*> extensions(kRequiredInstanceExtensions.begin(), kRequiredInstanceExtensions.end());
 		if (enableValidationLayers_)
 		{
-			requiredLayers.assign(validationLayers.begin(), validationLayers.end());
+			extensions.emplace_back(vk::EXTDebugUtilsExtensionName);
 		}
 
-		std::vector<const char*> extensions{ GetRequiredVulkanExtensions() };
-		if (!IsRequiredVulkanExtensionsSupported(extensions))
+		if (!AreInstanceExtensionsSupported(extensions))
 		{
 			return vk::Result::eErrorExtensionNotPresent;
 		}
@@ -158,14 +254,16 @@ private:
 			.apiVersion         { vk::ApiVersion14 }
 		};
 
-		vk::InstanceCreateInfo createInfo
+		std::vector<const char*> layers;
+		if (enableValidationLayers_)
 		{
-			.pApplicationInfo        { &appInfo },
-			.enabledLayerCount       { static_cast<grove::u32>(requiredLayers.size()) },
-			.ppEnabledLayerNames     { requiredLayers.data() },
-			.enabledExtensionCount   { static_cast<grove::u32>(extensions.size()) },
-			.ppEnabledExtensionNames { extensions.data() }
-		};
+			layers.assign(kValidationLayers.begin(), kValidationLayers.end());
+		}
+
+		vk::InstanceCreateInfo createInfo{};
+		createInfo.setPApplicationInfo(&appInfo)
+			      .setPEnabledLayerNames(layers)
+		          .setPEnabledExtensionNames(extensions);
 
 		auto [result, instance] = vk::createInstance(createInfo);
 		if (result != vk::Result::eSuccess)
@@ -195,12 +293,12 @@ private:
 
 	vk::Result CreateSurface()
 	{
-		auto* win32Window{ static_cast<grove::Win32Window*>(window_.Get())};
+		auto* glfwWindow{ static_cast<grove::GLFWWindow*>(window_.Get())};
 
 		const vk::Win32SurfaceCreateInfoKHR createInfo
 		{
-			.hinstance { win32Window-> GetHInstance() },
-			.hwnd      { win32Window-> GetHWND() }
+			.hinstance { glfwWindow-> GetHInstance() },
+			.hwnd      { glfwWindow-> GetHWND() }
 		};
 
 		auto [result, surf] = instance_.createWin32SurfaceKHR(createInfo);
@@ -252,7 +350,7 @@ private:
 
 		if (!indices.IsComplete() ||
 			!deviceFeats.geometryShader ||
-			!IsSupportsRequiredDeviceExtensions(physicalDevice))
+			!AreDeviceExtensionsSupported(physicalDevice, kDeviceExtensions))
 		{
 			return 0;
 		}
@@ -283,7 +381,6 @@ private:
 
 	vk::Result CreateLogicalDevice()
 	{
-		auto validationLayers{ GetValidationLayers() };
 		QueueFamilyIndices indices{ FindQueueFamilies(physicalDevice_) };
 
 		std::vector<vk::DeviceQueueCreateInfo> queueCreateInfos;
@@ -296,33 +393,34 @@ private:
 		grove::f32 queuePriority{ 1.0f };
 		for (grove::u32 queueFamily : uniqueQueueFamilies)
 		{
-			vk::DeviceQueueCreateInfo queueCreateInfo
-			{
-				.queueFamilyIndex { queueFamily },
-				.queueCount       { 1 },
-				.pQueuePriorities { &queuePriority }
-			};
-
-			queueCreateInfos.emplace_back(queueCreateInfo);
+			queueCreateInfos.emplace_back(
+				vk::DeviceQueueCreateInfo
+				{
+					.queueFamilyIndex { queueFamily },
+					.queueCount       { 1 },
+					.pQueuePriorities { &queuePriority }
+				}
+			);
 		}
 
-		std::array<const char*, 1> deviceExtensions{ GetRequiredDeviceExtensions() };
+		using Chain = vk::StructureChain<
+			vk::DeviceCreateInfo,
+			vk::PhysicalDeviceFeatures2,
+			vk::PhysicalDeviceVulkan13Features,
+			vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT
+		>;
 
-		vk::StructureChain<vk::PhysicalDeviceFeatures2, vk::PhysicalDeviceVulkan13Features, vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT> featureChain
-		{
-			{ },
-			{ .dynamicRendering { true } },
-			{ .extendedDynamicState { true } }
-		};
+		Chain chain{};
 
-		vk::DeviceCreateInfo createInfo
-		{
-			.pNext                   { &featureChain.get<vk::PhysicalDeviceFeatures2>() },
-			.queueCreateInfoCount    { static_cast<grove::u32>(queueCreateInfos.size()) },
-			.pQueueCreateInfos       { queueCreateInfos.data() },
-			.enabledExtensionCount   { static_cast<grove::u32>(deviceExtensions.size()) },
-			.ppEnabledExtensionNames { deviceExtensions.data() }
-		};
+		chain.get<vk::PhysicalDeviceVulkan13Features>()
+			.setDynamicRendering(true);
+
+		chain.get<vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT>()
+			.setExtendedDynamicState(true);
+
+		auto& createInfo = chain.get<vk::DeviceCreateInfo>()
+			.setPEnabledExtensionNames(kDeviceExtensions)
+			.setQueueCreateInfos(queueCreateInfos);
 
 		auto [result, dev] = physicalDevice_.createDevice(createInfo);
 		if (result != vk::Result::eSuccess)
@@ -330,8 +428,7 @@ private:
 			return result;
 		}
 
-		device_ = std::move(dev);
-
+		device_        = std::move(dev);
 		graphicsQueue_ = device_.getQueue(indices.graphicsFamily.value(), 0);
 		presentQueue_  = device_.getQueue(indices.presentFamily.value(), 0);
 
@@ -340,11 +437,10 @@ private:
 
 	void MainLoop()
 	{
-		MSG msg{};
-		while (GetMessage(&msg, nullptr, 0, 0) > 0)
+		// TODO: get back to this when input system is ready
+		while (!glfwWindowShouldClose(static_cast<GLFWwindow*>(window_->GetNativeHandle())))
 		{
-			TranslateMessage(&msg);
-			DispatchMessage(&msg);
+			window_->OnUpdate();
 		}
 	}
 
@@ -388,62 +484,39 @@ private:
 		return indices;
 	}
 
-	bool IsSupportsRequiredDeviceExtensions(vk::raii::PhysicalDevice physicalDevice)
+	vk::Result GetSwapChainSupportDetails(SwapChainSupportDetails& outDetails)
 	{
-		auto [res, availableExtensions] = physicalDevice.enumerateDeviceExtensionProperties();
-
-		std::array<const char*, 1> deviceExtensions{ GetRequiredDeviceExtensions() };
-
-		std::unordered_set<std::string_view> requiredExtensions(deviceExtensions.begin(), deviceExtensions.end());
-
-		for (const auto& extension : availableExtensions)
 		{
-			requiredExtensions.erase(extension.extensionName);
-		}
-
-		return requiredExtensions.empty();
-	}
-
-	bool IsRequiredVulkanExtensionsSupported(const std::vector<const char*>& requiredExtensions)
-	{
-		auto [result, extProps] = vk::enumerateInstanceExtensionProperties();
-
-		if (result != vk::Result::eSuccess)
-		{
-			GRV_LOG_ERROR(GRV_CHANNEL(System), "Failed to enumerate Vulkan instance extension properties: {}", vk::to_string(result));
-			return false;
-		}
-
-		GRV_LOG_TRACE(GRV_CHANNEL(System), "Found {} available Vulkan extensions(s):", extProps.size());
-
-		std::unordered_set<std::string_view> availableExtensions;
-		availableExtensions.reserve(extProps.size());
-
-		for (const auto& ext : extProps)
-		{
-			size_t len = strnlen(ext.extensionName, vk::MaxExtensionNameSize);
-			std::string_view sv{ ext.extensionName, len };
-			GRV_LOG_TRACE(GRV_CHANNEL(System), "    {}", sv);
-			availableExtensions.emplace(sv);
-		}
-
-		std::vector<std::string_view> missing;
-		for (const char* required : requiredExtensions)
-		{
-			if (!availableExtensions.contains(required))
+			auto [res, caps] = physicalDevice_.getSurfaceCapabilitiesKHR(surface_);
+			if (res != vk::Result::eSuccess)
 			{
-				missing.emplace_back(required);
-				GRV_LOG_ERROR(GRV_CHANNEL(System), "Required Vulkan extension '{}' is not available.", required);
+				GRV_LOG_ERROR(GRV_CHANNEL(System), "Failed to get surface capabilities: {}", vk::to_string(res));
+				return res;
 			}
+			outDetails.capabilities = std::move(caps);
 		}
 
-		if (!missing.empty())
 		{
-			GRV_LOG_ERROR(GRV_CHANNEL(System), "Missing {} required Vulkan extension(s).", missing.size());
-			return false;
+			auto [res, fmts] = physicalDevice_.getSurfaceFormatsKHR(surface_);
+			if (res != vk::Result::eSuccess)
+			{
+				GRV_LOG_ERROR(GRV_CHANNEL(System), "Failed to get surface formats: {}", vk::to_string(res));
+				return res;
+			}
+			outDetails.formats = std::move(fmts);
 		}
 
-		return true;
+		{
+			auto [res, modes] = physicalDevice_.getSurfacePresentModesKHR(surface_);
+			if (res != vk::Result::eSuccess)
+			{
+				GRV_LOG_ERROR(GRV_CHANNEL(System), "Failed to get surface present modes: {}", vk::to_string(res));
+				return res;
+			}
+			outDetails.presentModes = std::move(modes);
+		}
+
+		return vk::Result::eSuccess;
 	}
 
 	vk::DebugUtilsMessengerCreateInfoEXT GetDebugUtilsCreateInfo()
@@ -499,71 +572,6 @@ private:
 		return vk::False;
 	}
 
-	std::vector<const char*> GetRequiredVulkanExtensions() const
-	{
-		std::vector<const char*> extensions
-		{
-			vk::KHRSurfaceExtensionName,
-			vk::KHRWin32SurfaceExtensionName
-		};
-
-		if (enableValidationLayers_)
-		{
-			extensions.emplace_back(vk::EXTDebugUtilsExtensionName);
-		}
-
-		return extensions;
-	}
-
-	constexpr std::array<const char*, 1> GetRequiredDeviceExtensions()
-	{
-		return
-		{
-			vk::KHRSwapchainExtensionName
-		};
-	}
-
-	constexpr std::array<const char*, 1> GetValidationLayers()
-	{
-		return 
-		{ 
-			"VK_LAYER_KHRONOS_validation" 
-		};
-	}
-
-	template <size_t N>
-	bool IsValidationLayersSupported(const std::array<const char*, N>& validationLayers)
-	{
-		auto [result, availableLayers] = vk::enumerateInstanceLayerProperties();
-		if (result != vk::Result::eSuccess)
-		{
-			GRV_LOG_ERROR(GRV_CHANNEL(System), "Failed to enumerate Vulkan Instance Layer Properties: {}", vk::to_string(result));
-			return false;
-		}
-
-		for (const char* layerName : validationLayers)
-		{
-			bool layerFound{ false };
-
-			for (const auto& layerProperties : availableLayers)
-			{
-				if (strcmp(layerName, layerProperties.layerName) == 0)
-				{
-					layerFound = true;
-					break;
-				}
-			}
-
-			if (!layerFound)
-			{
-				GRV_LOG_ERROR(GRV_CHANNEL(System), "Vulkan validation layer '{}' is not available.", layerName);
-				return false;
-			}
-		}
-
-		return true;
-	}
-
 private:
 	grove::BoxPtr<grove::GroveEngine> grove_;
 	grove::BoxPtr<grove::Window>      window_;
@@ -582,7 +590,7 @@ private:
 	#endif
 };
 
-int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine, int nCmdShow)
+int main()
 {
 	HelloTriangleApplication app;
 

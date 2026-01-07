@@ -1,6 +1,6 @@
 #pragma once
 
-#include "grove/core/config.h"
+#include "grove/core/config.hpp"
 
 #include <algorithm>
 #include <format>

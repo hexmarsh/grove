@@ -20,8 +20,10 @@ namespace grove
 	public:
 		virtual ~Window() = default;
 
+		virtual void OnUpdate() = 0;
+
 		static BoxPtr<Window> Create(const WindowCreateInfo &create_info);
 
-		virtual void *GetNativeHandle() const = 0;
+		virtual void* GetNativeHandle() const = 0;
 	};
 }

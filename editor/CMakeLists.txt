@@ -1,5 +1,4 @@
 add_executable(grove_editor
-	WIN32
 	src/main.cpp
 )
 
