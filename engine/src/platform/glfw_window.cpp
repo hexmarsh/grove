@@ -22,6 +22,20 @@ namespace grove
 		glfwPollEvents();
 	}
 
+	u32 GLFWWindow::GetWidth() const
+	{
+		int width;
+		glfwGetFramebufferSize(window_, &width, nullptr);
+		return static_cast<u32>(width);
+	}
+
+	u32 GLFWWindow::GetHeight() const
+	{
+		int height;
+		glfwGetFramebufferSize(window_, nullptr, &height);
+		return static_cast<u32>(height);
+	}
+
 	void* GLFWWindow::GetNativeHandle() const
 	{
 		return window_;

@@ -22,9 +22,9 @@ target_precompile_headers(grove_engine
 
 if(WIN32)
 	target_compile_definitions(grove_engine
-		PRIVATE
-			WIN32_LEAN_AND_MEAN
+		PUBLIC
 			NOMINMAX
+			WIN32_LEAN_AND_MEAN
 	)
 
 	target_compile_options(grove_engine

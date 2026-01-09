@@ -4,7 +4,7 @@
 #include <GLFW/glfw3.h>
 
 #if GRV_PLATFORM_WINDOWS
-#include <windows.h>
+	#include <windows.h>
 #endif
 
 namespace grove
@@ -16,6 +16,9 @@ namespace grove
 		~GLFWWindow() override;
 
 		void OnUpdate() override;
+
+		u32 GetWidth() const override;
+		u32 GetHeight() const override;
 
 		void* GetNativeHandle() const override;
 

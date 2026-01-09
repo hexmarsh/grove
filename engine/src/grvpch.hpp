@@ -2,6 +2,12 @@
 
 #include "grove/core/config.hpp"
 
+#if GRV_PLATFORM_WINDOWS
+	#ifndef NOMINMAX
+		#define NOMINMAX
+	#endif
+#endif
+
 #include <algorithm>
 #include <format>
 #include <functional>

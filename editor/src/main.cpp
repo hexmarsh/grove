@@ -9,6 +9,9 @@
 #include <utility>
 #include <vector>
 #include <span>
+#include <unordered_map>
+#include <ranges>
+#include <limits>
 
 #define VULKAN_HPP_NO_STRUCT_CONSTRUCTORS
 #define VULKAN_HPP_NO_EXCEPTIONS
@@ -26,6 +29,44 @@
 #define KiB(x) ((x) >> 10)
 #define MiB(x) ((x) >> 20)
 #define GiB(x) ((x) >> 30)
+
+enum class VSyncSetting : grove::u8
+{
+	OFF = 0,
+	ON,
+	ADAPTIVE,
+	TRIPLE_BUFFERING
+};
+
+constexpr std::string_view ToString(VSyncSetting vsync)
+{
+	switch (vsync)
+	{
+	case VSyncSetting::OFF:              return "OFF";
+	case VSyncSetting::ON:               return "ON";
+	case VSyncSetting::ADAPTIVE:         return "ADAPTIVE";
+	case VSyncSetting::TRIPLE_BUFFERING: return "TRIPLE_BUFFERING";
+	default:                             GRV_ASSERT(true, "Invalid VSyncSetting");
+	}
+}
+
+constexpr vk::PresentModeKHR ToPresentMode(VSyncSetting setting)
+{
+	switch (setting)
+	{
+	case VSyncSetting::OFF:              return vk::PresentModeKHR::eImmediate;
+	case VSyncSetting::ON:               return vk::PresentModeKHR::eFifo;
+	case VSyncSetting::ADAPTIVE:         return vk::PresentModeKHR::eFifoRelaxed;
+	case VSyncSetting::TRIPLE_BUFFERING: return vk::PresentModeKHR::eMailbox;
+	default:                             GRV_ASSERT(true, "Invalid VSyncSetting");
+	}
+};
+
+struct GraphicsSettings
+{
+	VSyncSetting vsyncSetting;
+};
+
 
 namespace
 {
@@ -142,6 +183,25 @@ struct SwapChainSupportDetails
 	std::vector<vk::PresentModeKHR> presentModes;
 };
 
+struct VulkanContext
+{
+	vk::raii::Context                context;
+	vk::raii::Instance               instance               { nullptr };
+	vk::raii::DebugUtilsMessengerEXT debugMessenger         { nullptr };
+	vk::raii::SurfaceKHR             surface                { nullptr };
+	vk::raii::PhysicalDevice         physicalDevice         { nullptr };
+	vk::raii::Device                 device                 { nullptr };
+	QueueFamilyIndices               queueFamilyIndices     { };
+	vk::raii::SwapchainKHR           swapChain              { nullptr };
+	vk::raii::Queue                  graphicsQueue          { nullptr };
+	vk::raii::Queue                  presentQueue           { nullptr };
+	#if defined(NDEBUG)
+	bool                             enableValidationLayers { false };
+	#else
+	bool                             enableValidationLayers { true };
+	#endif
+};
+
 class HelloTriangleApplication
 {
 public:
@@ -224,18 +284,25 @@ private:
 			return false;
 		}
 
+		result = CreateSwapChain();
+		if (result != vk::Result::eSuccess)
+		{
+			GRV_LOG_FATAL(GRV_CHANNEL(System), "Failed to create Vulkan SwapChain: {}", vk::to_string(result));
+			return false;
+		}
+
 		return true;
 	}
 
 	vk::Result CreateInstance()
 	{
-		if (enableValidationLayers_ && !AreValidationLayersSupported(kValidationLayers))
+		if (vulkanContext_.enableValidationLayers && !AreValidationLayersSupported(kValidationLayers))
 		{
 			return vk::Result::eErrorLayerNotPresent;
 		}
 
 		std::vector<const char*> extensions(kRequiredInstanceExtensions.begin(), kRequiredInstanceExtensions.end());
-		if (enableValidationLayers_)
+		if (vulkanContext_.enableValidationLayers)
 		{
 			extensions.emplace_back(vk::EXTDebugUtilsExtensionName);
 		}
@@ -255,7 +322,7 @@ private:
 		};
 
 		std::vector<const char*> layers;
-		if (enableValidationLayers_)
+		if (vulkanContext_.enableValidationLayers)
 		{
 			layers.assign(kValidationLayers.begin(), kValidationLayers.end());
 		}
@@ -271,23 +338,23 @@ private:
 			return result;
 		}
 
-		instance_ = vk::raii::Instance(context_, instance);
+		vulkanContext_.instance = vk::raii::Instance(vulkanContext_.context, instance);
 		return vk::Result::eSuccess;
 	}
 
 	vk::Result SetupDebugMessenger()
 	{
-		GRV_ASSERT(enableValidationLayers_);
+		GRV_ASSERT(vulkanContext_.enableValidationLayers);
 
 		vk::DebugUtilsMessengerCreateInfoEXT createInfo{ GetDebugUtilsCreateInfo() };
 
-		auto [result, dbg] = instance_.createDebugUtilsMessengerEXT(createInfo);
+		auto [result, dbg] = vulkanContext_.instance.createDebugUtilsMessengerEXT(createInfo);
 		if (result != vk::Result::eSuccess)
 		{
 			return result;
 		}
 
-		debugMessenger_ = std::move(dbg);
+		vulkanContext_.debugMessenger = std::move(dbg);
 		return vk::Result::eSuccess;
 	}
 
@@ -301,19 +368,19 @@ private:
 			.hwnd      { glfwWindow-> GetHWND() }
 		};
 
-		auto [result, surf] = instance_.createWin32SurfaceKHR(createInfo);
+		auto [result, surf] = vulkanContext_.instance.createWin32SurfaceKHR(createInfo);
 		if (result != vk::Result::eSuccess)
 		{
 			return result;
 		}
 
-		surface_ = std::move(surf);
+		vulkanContext_.surface = std::move(surf);
 		return vk::Result::eSuccess;
 	}
 
 	vk::Result PickPhysicalDevice()
 	{
-		auto [result, devices] = instance_.enumeratePhysicalDevices();
+		auto [result, devices] = vulkanContext_.instance.enumeratePhysicalDevices();
 		if (result != vk::Result::eSuccess)
 		{
 			return result;
@@ -336,7 +403,7 @@ private:
 			return vk::Result::eErrorInitializationFailed;
 		}
 
-		physicalDevice_ = candidates.rbegin()->second;
+		vulkanContext_.physicalDevice = candidates.rbegin()->second;
 		return vk::Result::eSuccess;
 	}
 
@@ -381,13 +448,13 @@ private:
 
 	vk::Result CreateLogicalDevice()
 	{
-		QueueFamilyIndices indices{ FindQueueFamilies(physicalDevice_) };
+		vulkanContext_.queueFamilyIndices = FindQueueFamilies(vulkanContext_.physicalDevice);
 
 		std::vector<vk::DeviceQueueCreateInfo> queueCreateInfos;
 		std::set<grove::u32> uniqueQueueFamilies
 		{
-			indices.graphicsFamily.value(),
-			indices.presentFamily.value()
+			vulkanContext_.queueFamilyIndices.graphicsFamily.value(),
+			vulkanContext_.queueFamilyIndices.presentFamily.value()
 		};
 
 		grove::f32 queuePriority{ 1.0f };
@@ -422,16 +489,82 @@ private:
 			.setPEnabledExtensionNames(kDeviceExtensions)
 			.setQueueCreateInfos(queueCreateInfos);
 
-		auto [result, dev] = physicalDevice_.createDevice(createInfo);
+		auto [result, dev] = vulkanContext_.physicalDevice.createDevice(createInfo);
 		if (result != vk::Result::eSuccess)
 		{
 			return result;
 		}
 
-		device_        = std::move(dev);
-		graphicsQueue_ = device_.getQueue(indices.graphicsFamily.value(), 0);
-		presentQueue_  = device_.getQueue(indices.presentFamily.value(), 0);
+		vulkanContext_.device        = std::move(dev);
+		vulkanContext_.graphicsQueue = vulkanContext_.device.getQueue(vulkanContext_.queueFamilyIndices.graphicsFamily.value(), 0);
+		vulkanContext_.presentQueue  = vulkanContext_.device.getQueue(vulkanContext_.queueFamilyIndices.presentFamily.value(), 0);
 
+		return vk::Result::eSuccess;
+	}
+
+	vk::Result CreateSwapChain()
+	{
+		SwapChainSupportDetails swapChainDetails{};
+		GetSwapChainSupportDetails(swapChainDetails);
+
+		vk::SurfaceFormatKHR surfaceFormat = ChooseSwapSurfaceFormat(swapChainDetails);
+		vk::PresentModeKHR   presentMode   = ChooseSwapPresentMode(swapChainDetails, VSyncSetting::OFF);
+		vk::Extent2D         extent        = ChooseSwapExtent(swapChainDetails);
+
+		auto& caps = swapChainDetails.capabilities;
+
+		grove::u32 imageCount{ swapChainDetails.capabilities.minImageCount + 1 };
+		if (caps.maxImageCount > 0 && imageCount > caps.maxImageCount)
+		{
+			imageCount = caps.maxImageCount;
+		}
+
+		vk::SwapchainCreateInfoKHR createInfo;
+		createInfo
+			.setFlags(vk::SwapchainCreateFlagsKHR())
+			.setSurface(vulkanContext_.surface)
+			.setMinImageCount(imageCount)
+			.setImageFormat(surfaceFormat.format)
+			.setImageColorSpace(surfaceFormat.colorSpace)
+			.setImageExtent(extent)
+			.setImageArrayLayers(1)
+			.setImageUsage(vk::ImageUsageFlagBits::eColorAttachment);
+
+		if (vulkanContext_.queueFamilyIndices.graphicsFamily != vulkanContext_.queueFamilyIndices.presentFamily)
+		{
+			grove::u32 queueFamilyIndices[]
+			{
+				vulkanContext_.queueFamilyIndices.graphicsFamily.value(),
+				vulkanContext_.queueFamilyIndices.presentFamily.value()
+			};
+
+			createInfo
+				.setImageSharingMode(vk::SharingMode::eConcurrent)
+				.setQueueFamilyIndexCount(2)
+				.setQueueFamilyIndices(queueFamilyIndices);
+		}
+		else
+		{
+			createInfo
+				.setImageSharingMode(vk::SharingMode::eExclusive)
+				.setQueueFamilyIndexCount(0)      // optional
+				.setPQueueFamilyIndices(nullptr); // optional
+		}
+
+		createInfo
+			.setPreTransform(caps.currentTransform)
+			.setCompositeAlpha(vk::CompositeAlphaFlagBitsKHR::eOpaque)
+			.setPresentMode(presentMode)
+			.setClipped(vk::True)
+			.setOldSwapchain(VK_NULL_HANDLE);
+
+		auto [res, swapChain] = vulkanContext_.device.createSwapchainKHR(createInfo);
+		if (res != vk::Result::eSuccess)
+		{
+			return res;
+		}
+
+		vulkanContext_.swapChain = std::move(swapChain);
 		return vk::Result::eSuccess;
 	}
 
@@ -473,7 +606,7 @@ private:
 				indices.graphicsFamily = i;
 			}
 
-			auto [res, presentSupport] = physicalDevice.getSurfaceSupportKHR(i, surface_);
+			auto [res, presentSupport] = physicalDevice.getSurfaceSupportKHR(i, vulkanContext_.surface);
 
 			if (presentSupport)
 			{
@@ -484,10 +617,63 @@ private:
 		return indices;
 	}
 
+	vk::SurfaceFormatKHR ChooseSwapSurfaceFormat(const SwapChainSupportDetails& swapChainDetails)
+	{
+		for (const vk::SurfaceFormatKHR& format : swapChainDetails.formats)
+		{
+			// pick srgb if available
+			if (format.format == vk::Format::eR8G8B8A8Srgb &&
+				format.colorSpace == vk::ColorSpaceKHR::eSrgbNonlinear)
+			{
+				return format;
+			}
+		}
+
+		return swapChainDetails.formats.front();
+	}
+
+	vk::PresentModeKHR ChooseSwapPresentMode(const SwapChainSupportDetails& swapChainDetails, VSyncSetting vsyncSetting)
+	{
+
+		vk::PresentModeKHR requestedMode = ToPresentMode(vsyncSetting);
+
+		for (vk::PresentModeKHR presentMode : swapChainDetails.presentModes)
+		{
+			if (presentMode == requestedMode)
+			{
+				return presentMode;
+			}
+		}
+
+		// fifo guaranteed by spec
+		GRV_LOG_WARN(GRV_CHANNEL(System), 
+			"VSync setting '{}' (mode '{}') is not available. Falling back to FIFO",
+			ToString(vsyncSetting),
+			vk::to_string(requestedMode));
+
+		return vk::PresentModeKHR::eFifo;
+	}
+
+	vk::Extent2D ChooseSwapExtent(const SwapChainSupportDetails& swapChainDetails)
+	{
+		const auto& caps = swapChainDetails.capabilities;
+
+		if (caps.currentExtent.width != std::numeric_limits<grove::u32>::max())
+		{
+			return caps.currentExtent;
+		}
+
+		return
+		{
+			std::clamp<grove::u32>(window_->GetWidth(), caps.minImageExtent.width, caps.maxImageExtent.width),
+			std::clamp<grove::u32>(window_->GetHeight(), caps.minImageExtent.height, caps.maxImageExtent.height)
+		};
+	}
+
 	vk::Result GetSwapChainSupportDetails(SwapChainSupportDetails& outDetails)
 	{
 		{
-			auto [res, caps] = physicalDevice_.getSurfaceCapabilitiesKHR(surface_);
+			auto [res, caps] = vulkanContext_.physicalDevice.getSurfaceCapabilitiesKHR(vulkanContext_.surface);
 			if (res != vk::Result::eSuccess)
 			{
 				GRV_LOG_ERROR(GRV_CHANNEL(System), "Failed to get surface capabilities: {}", vk::to_string(res));
@@ -497,7 +683,7 @@ private:
 		}
 
 		{
-			auto [res, fmts] = physicalDevice_.getSurfaceFormatsKHR(surface_);
+			auto [res, fmts] = vulkanContext_.physicalDevice.getSurfaceFormatsKHR(vulkanContext_.surface);
 			if (res != vk::Result::eSuccess)
 			{
 				GRV_LOG_ERROR(GRV_CHANNEL(System), "Failed to get surface formats: {}", vk::to_string(res));
@@ -507,7 +693,7 @@ private:
 		}
 
 		{
-			auto [res, modes] = physicalDevice_.getSurfacePresentModesKHR(surface_);
+			auto [res, modes] = vulkanContext_.physicalDevice.getSurfacePresentModesKHR(vulkanContext_.surface);
 			if (res != vk::Result::eSuccess)
 			{
 				GRV_LOG_ERROR(GRV_CHANNEL(System), "Failed to get surface present modes: {}", vk::to_string(res));
@@ -575,19 +761,7 @@ private:
 private:
 	grove::BoxPtr<grove::GroveEngine> grove_;
 	grove::BoxPtr<grove::Window>      window_;
-	vk::raii::Context                 context_;
-	vk::raii::Instance                instance_               { nullptr };
-	vk::raii::DebugUtilsMessengerEXT  debugMessenger_         { nullptr };
-	vk::raii::SurfaceKHR              surface_                { nullptr };
-	vk::raii::PhysicalDevice          physicalDevice_         { nullptr };
-	vk::raii::Device                  device_                 { nullptr };
-	vk::raii::Queue                   graphicsQueue_          { nullptr };
-	vk::raii::Queue                   presentQueue_           { nullptr };
-	#if defined(NDEBUG)
-	bool                              enableValidationLayers_ { false };
-	#else
-	bool                              enableValidationLayers_ { true };
-	#endif
+	VulkanContext vulkanContext_;
 };
 
 int main()

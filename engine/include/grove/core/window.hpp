@@ -21,6 +21,9 @@ namespace grove
 		virtual ~Window() = default;
 
 		virtual void OnUpdate() = 0;
+		virtual u32 GetWidth() const = 0;
+		virtual u32 GetHeight() const = 0;
+
 
 		static BoxPtr<Window> Create(const WindowCreateInfo &create_info);
 
