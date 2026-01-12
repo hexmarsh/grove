@@ -52,7 +52,7 @@ namespace grove
 
 		GRV_LOG_INFO(
 			GRV_CHANNEL(System),
-			"Creating window {} ({}, {})",
+			"event=window.creating title=\"{}\" width={} height={}",
 			createInfo.title,
 			createInfo.width,
 			createInfo.height
@@ -70,7 +70,7 @@ namespace grove
 
 		if (!RegisterClass(&wc))
 		{
-			GRV_LOG_WARN(GRV_CHANNEL(System), "Failed to register window class. Error: {}", GetLastError());
+			GRV_LOG_WARN(GRV_CHANNEL(System), "event=window.registerClass.failed errorCode={}", GetLastError());
 		}
 
 		hwnd_ = CreateWindowEx(
@@ -86,7 +86,7 @@ namespace grove
 
 		if (!hwnd_)
 		{
-			GRV_LOG_ERROR(GRV_CHANNEL(System), "Failed to create window. Error: {}", GetLastError());
+			GRV_LOG_ERROR(GRV_CHANNEL(System), "event=window.create.failed errorCode={}", GetLastError());
 			return;
 		}
 

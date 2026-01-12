@@ -6,13 +6,13 @@
 
 namespace grove
 {
-	BoxPtr<Window> Window::Create(const WindowCreateInfo& createInfo)
+	std::unique_ptr<Window> Window::Create(const WindowCreateInfo& createInfo)
 	{
 #if GRV_PLATFORM_WINDOWS
-		return BoxPtr<GLFWWindow>::Create(createInfo);
+		return std::make_unique<GLFWWindow>(createInfo);
 #else
 		GRV_ASSERT(false, "Unknown Platform");
-		return BoxPtr<Window>{};
+		return nullptr;
 #endif
 	}
 }

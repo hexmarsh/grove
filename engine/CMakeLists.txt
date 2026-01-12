@@ -33,10 +33,13 @@ if(WIN32)
 	)
 endif()
 
+find_package(glm CONFIG REQUIRED)
+find_package(Vulkan REQUIRED)
+find_package(glfw3 CONFIG REQUIRED)
+
 target_link_libraries(grove_engine
 	PUBLIC
 		glfw
 		glm::glm
 		Vulkan::Vulkan
-		Vulkan::Headers
 )

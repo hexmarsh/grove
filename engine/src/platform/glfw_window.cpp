@@ -9,6 +9,7 @@ namespace grove
 {
 	GLFWWindow::GLFWWindow(const WindowCreateInfo& createInfo)
 	{
+		GRV_LOG_INFO(GRV_CHANNEL(System), "event=window.creating width={} height={}", createInfo.width, createInfo.height);
 		Init(createInfo);
 	}
 
@@ -57,7 +58,7 @@ namespace grove
 	{
 		if (!glfwInit())
 		{
-			GRV_LOG_ERROR(GRV_CHANNEL(System), "GLFW failed to initialize");
+			GRV_LOG_ERROR(GRV_CHANNEL(System), "event=glfw.init.failed");
 			return false;
 		}
 
@@ -73,7 +74,7 @@ namespace grove
 
 		if (!window_)
 		{
-			GRV_LOG_ERROR(GRV_CHANNEL(System), "Failed to create GLFW window");
+			GRV_LOG_ERROR(GRV_CHANNEL(System), "event=glfw.window.createFailed title=\"{}\" width={} height={}", createInfo.title, createInfo.width, createInfo.height);
 			Shutdown();
 			return false;
 		}

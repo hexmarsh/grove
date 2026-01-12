@@ -10,40 +10,56 @@
 
 namespace grove::log
 {
-	enum class level : u8
+	enum class Level : u8
 	{
-		trace = 0,
-		debug ,
-		info,
-		warn,
-		error,
-		fatal,
-		none
+		Trace = 0,
+		Debug ,
+		Info,
+		Warn,
+		Error,
+		Fatal,
+		None
 	};
 
-	constexpr std::string_view LogLevelToString(level level) noexcept
+	constexpr std::string_view ToString(Level level) noexcept
 	{
 		switch (level)
 		{
-		case level::trace: return "Trace";
-		case level::debug: return "Debug";
-		case level::info:  return "Info";
-		case level::warn:  return "Warn";
-		case level::error: return "Error";
-		case level::fatal: return "Fatal";
-		default:              return "Unknown";
+			using enum Level;
+		case Trace: return "T";
+		case Debug: return "D";
+		case Info:  return "I";
+		case Warn:  return "W";
+		case Error: return "E";
+		case Fatal: return "F";
+		default:    return "Unknown";
+		}
+	}
+
+	constexpr std::string_view ToColorCode(Level level)
+	{
+		switch (level)
+		{
+			using enum Level;
+		case Trace: return "90";
+		case Debug: return "36";
+		case Info:  return "32";
+		case Warn:  return "33";
+		case Error: return "31";
+		case Fatal: return "1;31";
+		default:    return "0";
 		}
 	}
 
 	class Logger
 	{
 	public:
-		explicit Logger(level minLevel = level::info)
+		explicit Logger(Level minLevel = Level::Info)
 			: minLogLevel_(minLevel), enabled_(true)
 		{}
 
 		template<typename... Args>
-		void Log(std::string_view channel, level lvl, std::format_string<Args...> fmt, Args&& ...args)
+		void Log(std::string_view channel, Level lvl, std::format_string<Args...> fmt, Args&& ...args)
 		{
 			if (!enabled_ || lvl < minLogLevel_)
 			{
@@ -53,14 +69,15 @@ namespace grove::log
 			std::scoped_lock lock{ mutex_ };
 
 			std::cout << std::format(
-				"[{}][{}] {}\n",
+				"\033[{}m[{}][{}] {}\033[0m\n",
+				ToColorCode(lvl),
 				channel,
-				LogLevelToString(lvl),
+				ToString(lvl),
 				std::format(fmt, std::forward<Args>(args)...)
 			);
 		}
 
-		void SetMinLevel(level level) noexcept
+		void SetMinLevel(Level level) noexcept
 		{
 			minLogLevel_ = level;
 		}
@@ -68,7 +85,7 @@ namespace grove::log
 		void Enable() { enabled_ = true; }
 		void Disable() { enabled_ = false; }
 
-		[[nodiscard]] level GetMinLogLevel() const noexcept
+		[[nodiscard]] Level GetMinLogLevel() const noexcept
 		{
 			return minLogLevel_;
 		}
@@ -80,7 +97,7 @@ namespace grove::log
 
 	private:
 		std::mutex mutex_;
-		level minLogLevel_;
+		Level minLogLevel_;
 		bool enabled_;
 	};
 

@@ -3,7 +3,7 @@
 #include <string>
 
 #include "grove/core/typedefs.hpp"
-#include "grove/core/memory/box_ptr.hpp"
+#include <memory>
 
 namespace grove
 {
@@ -25,7 +25,7 @@ namespace grove
 		virtual u32 GetHeight() const = 0;
 
 
-		static BoxPtr<Window> Create(const WindowCreateInfo &create_info);
+		static std::unique_ptr<Window> Create(const WindowCreateInfo &create_info);
 
 		virtual void* GetNativeHandle() const = 0;
 	};

@@ -15,6 +15,7 @@
 #include <mutex>
 #include <string_view>
 #include <utility>
+#include <memory>
 
 #include <cstddef>
 #include <cstdint>

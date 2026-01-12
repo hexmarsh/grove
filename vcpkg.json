@@ -1,0 +1,20 @@
+{
+  "dependencies": [
+    {
+      "name": "imgui",
+      "version>=": "1.91.9"
+    },
+    {
+      "name": "glfw3",
+      "version>=": "3.4#1"
+    },
+    {
+      "name": "glm",
+      "version>=": "1.0.3#0"
+    },
+    {
+      "name": "vulkan",
+      "version>=": "2023-12-17#0"
+    }
+  ]
+}

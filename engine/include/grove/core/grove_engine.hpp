@@ -19,6 +19,6 @@ namespace grove
 		void Shutdown();
 
 	private:
-		log::Logger logger_{ log::level::trace };
+		log::Logger logger_{ log::Level::Trace };
 	};
 }

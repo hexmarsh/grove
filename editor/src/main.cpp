@@ -1,17 +1,14 @@
 #include <array>
 #include <cstdlib>
+#include <limits>
 #include <map>
 #include <optional>
 #include <set>
-#include <string.h>
+#include <span>
 #include <string_view>
 #include <unordered_set>
 #include <utility>
 #include <vector>
-#include <span>
-#include <unordered_map>
-#include <ranges>
-#include <limits>
 
 #define VULKAN_HPP_NO_STRUCT_CONSTRUCTORS
 #define VULKAN_HPP_NO_EXCEPTIONS
@@ -30,6 +27,15 @@
 #define MiB(x) ((x) >> 20)
 #define GiB(x) ((x) >> 30)
 
+#define VK_CHECK(result) \
+do { \
+	if (!result)\
+	{\
+		GRV_LOG_ERROR(GRV_CHANNEL(System), "event=vk.error result={}", vk::to_string(result.error()));\
+		return result.error();\
+	}\
+} while(0)
+
 enum class VSyncSetting : grove::u8
 {
 	OFF = 0,
@@ -42,11 +48,12 @@ constexpr std::string_view ToString(VSyncSetting vsync)
 {
 	switch (vsync)
 	{
-	case VSyncSetting::OFF:              return "OFF";
-	case VSyncSetting::ON:               return "ON";
-	case VSyncSetting::ADAPTIVE:         return "ADAPTIVE";
-	case VSyncSetting::TRIPLE_BUFFERING: return "TRIPLE_BUFFERING";
-	default:                             GRV_ASSERT(true, "Invalid VSyncSetting");
+	using enum VSyncSetting;
+	case OFF:              return "OFF";
+	case ON:               return "ON";
+	case ADAPTIVE:         return "ADAPTIVE";
+	case TRIPLE_BUFFERING: return "TRIPLE_BUFFERING";
+	default:               GRV_ASSERT(false, "Invalid VSyncSetting"); return "Unknown";
 	}
 }
 
@@ -54,11 +61,12 @@ constexpr vk::PresentModeKHR ToPresentMode(VSyncSetting setting)
 {
 	switch (setting)
 	{
-	case VSyncSetting::OFF:              return vk::PresentModeKHR::eImmediate;
-	case VSyncSetting::ON:               return vk::PresentModeKHR::eFifo;
-	case VSyncSetting::ADAPTIVE:         return vk::PresentModeKHR::eFifoRelaxed;
-	case VSyncSetting::TRIPLE_BUFFERING: return vk::PresentModeKHR::eMailbox;
-	default:                             GRV_ASSERT(true, "Invalid VSyncSetting");
+	using enum VSyncSetting;
+	case OFF:              return vk::PresentModeKHR::eImmediate;
+	case ON:               return vk::PresentModeKHR::eFifo;
+	case ADAPTIVE:         return vk::PresentModeKHR::eFifoRelaxed;
+	case TRIPLE_BUFFERING: return vk::PresentModeKHR::eMailbox;
+	default:               GRV_ASSERT(false, "Invalid VSyncSetting"); return vk::PresentModeKHR::eFifo;
 	}
 };
 
@@ -66,7 +74,6 @@ struct GraphicsSettings
 {
 	VSyncSetting vsyncSetting;
 };
-
 
 namespace
 {
@@ -94,7 +101,8 @@ namespace
 		std::span<const T> available,
 		std::span<const char* const> required,
 		const char* typeName,
-		GetNameFunc getName)
+		GetNameFunc getName
+	)
 	{
 		std::unordered_set<std::string_view> requiredSet(required.begin(), required.end());
 
@@ -107,40 +115,42 @@ namespace
 		{
 			for (const auto& missing : requiredSet)
 			{
-				GRV_LOG_ERROR(GRV_CHANNEL(System), "Required {} '{}' is not available.", typeName, missing);
+				GRV_LOG_ERROR(GRV_CHANNEL(System), "event=vk.validation.missing type={} name={}", typeName, missing);
 			}
-			GRV_LOG_ERROR(GRV_CHANNEL(System), "Missing {} required {}(s).", requiredSet.size(), typeName);
+			GRV_LOG_ERROR(GRV_CHANNEL(System), "event=vk.validation.failed type={} missingCount={}", typeName, requiredSet.size());
 			return false;
 		}
 
 		return true;
 	}
 
-	bool AreValidationLayersSupported(std::span<const char* const> layers)
+	bool AreValidationLayersSupported(vk::raii::Context& context, std::span<const char* const> layers)
 	{
-		auto [result, availableLayers] = vk::enumerateInstanceLayerProperties();
-		if (result != vk::Result::eSuccess)
+		auto availableLayers = context.enumerateInstanceLayerProperties();
+
+		std::unordered_set<std::string_view> requiredSet(kValidationLayers.begin(), kValidationLayers.end());
+
+		for (const auto& item : availableLayers)
 		{
-			GRV_LOG_ERROR(GRV_CHANNEL(System), "Failed to enumerate Vulkan Instance Layer Properties: {}", vk::to_string(result));
+			requiredSet.erase(item.layerName);
+		}
+
+		if (!requiredSet.empty())
+		{
+			for (const auto& missing : requiredSet)
+			{
+				GRV_LOG_WARN(GRV_CHANNEL(System), "event=vk.validationLayer.missing name={}", missing);
+			}
+
 			return false;
 		}
 
-		return ValidateSupport<vk::LayerProperties>(
-			std::span{availableLayers},
-			layers,
-			"validation layer",
-			[](const vk::LayerProperties& prop) -> std::string_view { return prop.layerName; }
-		);
+		return true;
 	}
 
-	bool AreInstanceExtensionsSupported(std::span<const char* const> extensions)
+	bool AreInstanceExtensionsSupported(vk::raii::Context& context, std::span<const char* const> extensions)
 	{
-		auto [result, availableExtensions] = vk::enumerateInstanceExtensionProperties();
-		if (result != vk::Result::eSuccess)
-		{
-			GRV_LOG_ERROR(GRV_CHANNEL(System), "Failed to enumerate Vulkan instance extension properties: {}", vk::to_string(result));
-			return false;
-		}
+		auto availableExtensions = context.enumerateInstanceExtensionProperties();
 
 		return ValidateSupport<vk::ExtensionProperties>(
 			std::span{availableExtensions},
@@ -150,14 +160,9 @@ namespace
 		);
 	}
 
-	bool AreDeviceExtensionsSupported(vk::raii::PhysicalDevice device, std::span<const char* const> extensions)
+	bool AreDeviceExtensionsSupported(vk::raii::PhysicalDevice& device, std::span<const char* const> extensions)
 	{
-		auto [result, availableExtensions] = device.enumerateDeviceExtensionProperties();
-		if (result != vk::Result::eSuccess)
-		{
-			GRV_LOG_ERROR(GRV_CHANNEL(System), "Failed to enumerate device extension properties: {}", vk::to_string(result));
-			return false;
-		}
+		auto availableExtensions = device.enumerateDeviceExtensionProperties();
 
 		return ValidateSupport<vk::ExtensionProperties>(
 			std::span{availableExtensions},
@@ -186,15 +191,26 @@ struct SwapChainSupportDetails
 struct VulkanContext
 {
 	vk::raii::Context                context;
+
+	// instance level
 	vk::raii::Instance               instance               { nullptr };
 	vk::raii::DebugUtilsMessengerEXT debugMessenger         { nullptr };
 	vk::raii::SurfaceKHR             surface                { nullptr };
+
+	// device level
 	vk::raii::PhysicalDevice         physicalDevice         { nullptr };
 	vk::raii::Device                 device                 { nullptr };
 	QueueFamilyIndices               queueFamilyIndices     { };
+
+	// swap chain & queues
 	vk::raii::SwapchainKHR           swapChain              { nullptr };
 	vk::raii::Queue                  graphicsQueue          { nullptr };
 	vk::raii::Queue                  presentQueue           { nullptr };
+	std::vector<vk::Image>           swapChainImages;
+	std::vector<vk::raii::ImageView> swapChainImageViews;
+	vk::Format                       swapChainImageFormat   { vk::Format::eUndefined };
+	vk::Extent2D                     swapChainExtent;
+
 	#if defined(NDEBUG)
 	bool                             enableValidationLayers { false };
 	#else
@@ -226,10 +242,9 @@ public:
 private:
 	void InitEngine()
 	{
-		grove_ = grove::BoxPtr<grove::GroveEngine>::Create();
-		grove_->Init();
+		engine_.Init();
 
-		GRV_SET_LOG_LEVEL(trace);
+		GRV_SET_LOG_LEVEL(Trace);
 	}
 
 	void InitWindow()
@@ -247,67 +262,46 @@ private:
 		window_ = grove::Window::Create(windowCreateInfo);
 	}
 
+#define VK_INIT_STEP(expr, msg) \
+do { \
+	if (auto r = (expr); r != vk::Result::eSuccess) {\
+		GRV_LOG_ERROR(GRV_CHANNEL(System), "event=vk.init.failed step=\"{}\" result={}", (msg), vk::to_string(r)); \
+		return false; \
+	} \
+} while (0)
+
 	bool InitVulkan()
 	{
-		vk::Result result = CreateInstance();
-		if (result != vk::Result::eSuccess)
+		VK_INIT_STEP(CreateInstance(),      "Failed to create Vulkan Instance");
+
+		if (vkContext_.enableValidationLayers)
 		{
-			GRV_LOG_FATAL(GRV_CHANNEL(System), "Failed to create Vulkan Instance: {}", vk::to_string(result));
-			return false;
+			VK_INIT_STEP(SetupDebugMessenger(), "Failed to setup Vulkan Debug Messenger");
 		}
 
-		result = SetupDebugMessenger();
-		if (result != vk::Result::eSuccess)
-		{
-			GRV_LOG_FATAL(GRV_CHANNEL(System), "Failed to setup Vulkan Debug Messenger: {}", vk::to_string(result));
-			return false;
-		}
-
-		result = CreateSurface();
-		if (result != vk::Result::eSuccess)
-		{
-			GRV_LOG_FATAL(GRV_CHANNEL(System), "Failed to create Vulkan Surface: {}", vk::to_string(result));
-			return false;
-		}
-
-		result = PickPhysicalDevice();
-		if (result != vk::Result::eSuccess)
-		{
-			GRV_LOG_FATAL(GRV_CHANNEL(System), "Failed to pick Vulkan Physical Device: {}", vk::to_string(result));
-			return false;
-		}
-
-		result = CreateLogicalDevice();
-		if (result != vk::Result::eSuccess)
-		{
-			GRV_LOG_FATAL(GRV_CHANNEL(System), "Failed to pick create Vulkan Logical Device: {}", vk::to_string(result));
-			return false;
-		}
-
-		result = CreateSwapChain();
-		if (result != vk::Result::eSuccess)
-		{
-			GRV_LOG_FATAL(GRV_CHANNEL(System), "Failed to create Vulkan SwapChain: {}", vk::to_string(result));
-			return false;
-		}
-
+		VK_INIT_STEP(CreateSurface(),       "Failed to create Vulkan Surface");
+		VK_INIT_STEP(PickPhysicalDevice(),  "Failed to pick Vulkan Physical Device");
+		VK_INIT_STEP(CreateLogicalDevice(), "Failed to create Vulkan Logical Device");
+		VK_INIT_STEP(CreateSwapChain(),     "Failed to create Vulkan SwapChain");
+		VK_INIT_STEP(CreateImageViews(),    "Failed to create Vulkan Image Views");
 		return true;
 	}
+#undef VK_INIT_STEP
 
 	vk::Result CreateInstance()
 	{
-		if (vulkanContext_.enableValidationLayers && !AreValidationLayersSupported(kValidationLayers))
+		if (vkContext_.enableValidationLayers && !AreValidationLayersSupported(vkContext_.context, kValidationLayers))
 		{
 			return vk::Result::eErrorLayerNotPresent;
 		}
 
-		std::vector<const char*> extensions(kRequiredInstanceExtensions.begin(), kRequiredInstanceExtensions.end());
-		if (vulkanContext_.enableValidationLayers)
+		std::vector<const char*> instanceExtensions(kRequiredInstanceExtensions.begin(), kRequiredInstanceExtensions.end());
+		if (vkContext_.enableValidationLayers)
 		{
-			extensions.emplace_back(vk::EXTDebugUtilsExtensionName);
+			instanceExtensions.emplace_back(vk::EXTDebugUtilsExtensionName);
 		}
 
-		if (!AreInstanceExtensionsSupported(extensions))
+		if (!AreInstanceExtensionsSupported(vkContext_.context, instanceExtensions))
 		{
 			return vk::Result::eErrorExtensionNotPresent;
 		}
@@ -322,7 +316,7 @@ private:
 		};
 
 		std::vector<const char*> layers;
-		if (vulkanContext_.enableValidationLayers)
+		if (vkContext_.enableValidationLayers)
 		{
 			layers.assign(kValidationLayers.begin(), kValidationLayers.end());
 		}
@@ -330,80 +324,74 @@ private:
 		vk::InstanceCreateInfo createInfo{};
 		createInfo.setPApplicationInfo(&appInfo)
 			      .setPEnabledLayerNames(layers)
-		          .setPEnabledExtensionNames(extensions);
+		          .setPEnabledExtensionNames(instanceExtensions);
 
-		auto [result, instance] = vk::createInstance(createInfo);
-		if (result != vk::Result::eSuccess)
-		{
-			return result;
-		}
+		auto instance = vkContext_.context.createInstance(createInfo);
+		VK_CHECK(instance);
 
-		vulkanContext_.instance = vk::raii::Instance(vulkanContext_.context, instance);
+		vkContext_.instance = std::move(*instance);
+		GRV_LOG_INFO(GRV_CHANNEL(System), "event=vk.instance.created apiVersion={}", vk::ApiVersion14);
 		return vk::Result::eSuccess;
 	}
 
 	vk::Result SetupDebugMessenger()
 	{
-		GRV_ASSERT(vulkanContext_.enableValidationLayers);
+		GRV_ASSERT(vkContext_.enableValidationLayers);
 
 		vk::DebugUtilsMessengerCreateInfoEXT createInfo{ GetDebugUtilsCreateInfo() };
 
-		auto [result, dbg] = vulkanContext_.instance.createDebugUtilsMessengerEXT(createInfo);
-		if (result != vk::Result::eSuccess)
-		{
-			return result;
-		}
+		auto dbg = vkContext_.instance.createDebugUtilsMessengerEXT(createInfo);
+		VK_CHECK(dbg);
+		vkContext_.debugMessenger = std::move(*dbg);
 
-		vulkanContext_.debugMessenger = std::move(dbg);
+		GRV_LOG_INFO(GRV_CHANNEL(System), "event=vk.debugMessenger.created");
 		return vk::Result::eSuccess;
 	}
 
 	vk::Result CreateSurface()
 	{
-		auto* glfwWindow{ static_cast<grove::GLFWWindow*>(window_.Get())};
+		auto* glfwWindow{ static_cast<grove::GLFWWindow*>(window_.get()) };
 
 		const vk::Win32SurfaceCreateInfoKHR createInfo
 		{
-			.hinstance { glfwWindow-> GetHInstance() },
-			.hwnd      { glfwWindow-> GetHWND() }
+			.hinstance { glfwWindow->GetHInstance() },
+			.hwnd      { glfwWindow->GetHWND() }
 		};
 
-		auto [result, surf] = vulkanContext_.instance.createWin32SurfaceKHR(createInfo);
-		if (result != vk::Result::eSuccess)
-		{
-			return result;
-		}
+		auto surf = vkContext_.instance.createWin32SurfaceKHR(createInfo);
+		VK_CHECK(surf);
 
-		vulkanContext_.surface = std::move(surf);
+		vkContext_.surface = std::move(*surf);
+		GRV_LOG_INFO(GRV_CHANNEL(System), "event=vk.surface.created");
 		return vk::Result::eSuccess;
 	}
 
 	vk::Result PickPhysicalDevice()
 	{
-		auto [result, devices] = vulkanContext_.instance.enumeratePhysicalDevices();
-		if (result != vk::Result::eSuccess)
-		{
-			return result;
-		}
+		auto devices = vkContext_.instance.enumeratePhysicalDevices();
+		VK_CHECK(devices);
 
-		if (devices.empty())
+		if (devices->empty())
 		{
 			return vk::Result::eErrorInitializationFailed;
 		}
 
 		std::multimap<grove::u64, vk::raii::PhysicalDevice> candidates;
-		for (const auto& device : devices)
+		for (const auto& device : *devices)
 		{
 			grove::u64 score{ RateDeviceSuitability(device) };
 			candidates.insert(std::make_pair(score, device));
 		}
 
-		if (candidates.rbegin()->first <= 0)
+		grove::u64 deviceScore = candidates.rbegin()->first;
+		if (deviceScore <= 0)
 		{
 			return vk::Result::eErrorInitializationFailed;
 		}
 
-		vulkanContext_.physicalDevice = candidates.rbegin()->second;
+		vkContext_.physicalDevice = candidates.rbegin()->second;
+		vk::PhysicalDeviceProperties deviceProps = vkContext_.physicalDevice.getProperties();
+		GRV_LOG_INFO(GRV_CHANNEL(System), "event=vk.physicalDevice.selected deviceName=\"{}\" score={}", std::string_view{deviceProps.deviceName}, deviceScore);
 		return vk::Result::eSuccess;
 	}
 
@@ -419,18 +407,20 @@ private:
 			!deviceFeats.geometryShader ||
 			!AreDeviceExtensionsSupported(physicalDevice, kDeviceExtensions))
 		{
+			GRV_LOG_WARN(GRV_CHANNEL(System), "event=vk.device.unsuitable deviceName=\"{}\" missingQueues={} geometryShader={}",
+				std::string_view{deviceProps.deviceName},
+				!indices.IsComplete(),
+				!deviceFeats.geometryShader);
 			return 0;
 		}
 
 		grove::u64 score{ 0 };
 
-		// prefer discrete gpu
 		if (deviceProps.deviceType == vk::PhysicalDeviceType::eDiscreteGpu)
 		{
 			score += 1000;
 		}
 
-		// prefer highest vram
 		vk::DeviceSize vramBytes{ 0 };
 		for (size_t i{ 0 }; i < memProps.memoryHeapCount; ++i)
 		{
@@ -443,18 +433,29 @@ private:
 		score += GiB(vramBytes);
 		score += deviceProps.limits.maxImageDimension2D;
 
+		GRV_LOG_DEBUG(GRV_CHANNEL(System), "event=vk.device.scoreBreakdown deviceName='{}' type={} totalScore={} discreteBonus={} vramGiB={} maxImageDim={}",
+			std::string_view{deviceProps.deviceName},
+			vk::to_string(deviceProps.deviceType),
+			score,
+			(deviceProps.deviceType == vk::PhysicalDeviceType::eDiscreteGpu ? 1000 : 0),
+			GiB(vramBytes),
+			deviceProps.limits.maxImageDimension2D);
 		return score;
 	}
 
 	vk::Result CreateLogicalDevice()
 	{
-		vulkanContext_.queueFamilyIndices = FindQueueFamilies(vulkanContext_.physicalDevice);
+		vkContext_.queueFamilyIndices = FindQueueFamilies(vkContext_.physicalDevice);
+		GRV_LOG_TRACE(GRV_CHANNEL(System), "event=vk.queueFamilies.found graphicsFamily={} presentFamily={}",
+			vkContext_.queueFamilyIndices.graphicsFamily.value_or(-1),
+			vkContext_.queueFamilyIndices.presentFamily.value_or(-1)
+			);
 
 		std::vector<vk::DeviceQueueCreateInfo> queueCreateInfos;
 		std::set<grove::u32> uniqueQueueFamilies
 		{
-			vulkanContext_.queueFamilyIndices.graphicsFamily.value(),
-			vulkanContext_.queueFamilyIndices.presentFamily.value()
+			vkContext_.queueFamilyIndices.graphicsFamily.value(),
+			vkContext_.queueFamilyIndices.presentFamily.value()
 		};
 
 		grove::f32 queuePriority{ 1.0f };
@@ -489,27 +490,33 @@ private:
 			.setPEnabledExtensionNames(kDeviceExtensions)
 			.setQueueCreateInfos(queueCreateInfos);
 
-		auto [result, dev] = vulkanContext_.physicalDevice.createDevice(createInfo);
-		if (result != vk::Result::eSuccess)
-		{
-			return result;
-		}
+		auto device = vkContext_.physicalDevice.createDevice(createInfo);
+		VK_CHECK(device);
+		vkContext_.device        = std::move(*device);
 
-		vulkanContext_.device        = std::move(dev);
-		vulkanContext_.graphicsQueue = vulkanContext_.device.getQueue(vulkanContext_.queueFamilyIndices.graphicsFamily.value(), 0);
-		vulkanContext_.presentQueue  = vulkanContext_.device.getQueue(vulkanContext_.queueFamilyIndices.presentFamily.value(), 0);
+		auto graphicsQueue = vkContext_.device.getQueue(vkContext_.queueFamilyIndices.graphicsFamily.value(), 0);
+		VK_CHECK(graphicsQueue);
+		vkContext_.graphicsQueue = std::move(*graphicsQueue);
 
+		auto presentQueue  = vkContext_.device.getQueue(vkContext_.queueFamilyIndices.presentFamily.value(), 0);
+		VK_CHECK(presentQueue);
+		vkContext_.presentQueue = std::move(*presentQueue);
+
+		GRV_LOG_INFO(GRV_CHANNEL(System), "event=vk.logicalDevice.created graphicsFamily={} presentFamily={} graphicsQueueIndex={} presentQueueIndex={}",
+			vkContext_.queueFamilyIndices.graphicsFamily.value(),
+			vkContext_.queueFamilyIndices.presentFamily.value(),
+			0,
+			0);
 		return vk::Result::eSuccess;
 	}
 
 	vk::Result CreateSwapChain()
 	{
-		SwapChainSupportDetails swapChainDetails{};
-		GetSwapChainSupportDetails(swapChainDetails);
+		SwapChainSupportDetails swapChainDetails = GetSwapChainSupportDetails();
 
 		vk::SurfaceFormatKHR surfaceFormat = ChooseSwapSurfaceFormat(swapChainDetails);
-		vk::PresentModeKHR   presentMode   = ChooseSwapPresentMode(swapChainDetails, VSyncSetting::OFF);
-		vk::Extent2D         extent        = ChooseSwapExtent(swapChainDetails);
+		vk::PresentModeKHR presentMode = ChooseSwapPresentMode(swapChainDetails, VSyncSetting::OFF);
+		vk::Extent2D extent = ChooseSwapExtent(swapChainDetails);
 
 		auto& caps = swapChainDetails.capabilities;
 
@@ -522,7 +529,7 @@ private:
 		vk::SwapchainCreateInfoKHR createInfo;
 		createInfo
 			.setFlags(vk::SwapchainCreateFlagsKHR())
-			.setSurface(vulkanContext_.surface)
+			.setSurface(vkContext_.surface)
 			.setMinImageCount(imageCount)
 			.setImageFormat(surfaceFormat.format)
 			.setImageColorSpace(surfaceFormat.colorSpace)
@@ -530,12 +537,12 @@ private:
 			.setImageArrayLayers(1)
 			.setImageUsage(vk::ImageUsageFlagBits::eColorAttachment);
 
-		if (vulkanContext_.queueFamilyIndices.graphicsFamily != vulkanContext_.queueFamilyIndices.presentFamily)
+		if (vkContext_.queueFamilyIndices.graphicsFamily != vkContext_.queueFamilyIndices.presentFamily)
 		{
 			grove::u32 queueFamilyIndices[]
 			{
-				vulkanContext_.queueFamilyIndices.graphicsFamily.value(),
-				vulkanContext_.queueFamilyIndices.presentFamily.value()
+				vkContext_.queueFamilyIndices.graphicsFamily.value(),
+				vkContext_.queueFamilyIndices.presentFamily.value()
 			};
 
 			createInfo
@@ -558,13 +565,59 @@ private:
 			.setClipped(vk::True)
 			.setOldSwapchain(VK_NULL_HANDLE);
 
-		auto [res, swapChain] = vulkanContext_.device.createSwapchainKHR(createInfo);
-		if (res != vk::Result::eSuccess)
+		auto swapChain = vkContext_.device.createSwapchainKHR(createInfo);
+		VK_CHECK(swapChain);
+
+		vkContext_.swapChain = std::move(*swapChain);
+		vkContext_.swapChainImageFormat = surfaceFormat.format;
+		vkContext_.swapChainExtent = std::move(extent);
+		vkContext_.swapChainImages = vkContext_.swapChain.getImages();
+
+		GRV_LOG_INFO(GRV_CHANNEL(System), "event=vk.swapChain.created format={} extent={}x{} imageCount={}",
+			vk::to_string(surfaceFormat.format),
+			extent.width,
+			extent.height,
+			vkContext_.swapChainImages.size());
+		return vk::Result::eSuccess;
+	}
+
+	vk::Result CreateImageViews()
+	{
+		vkContext_.swapChainImageViews.clear();
+
+		vk::ComponentMapping componentMapping{};
+		componentMapping
+			.setR(vk::ComponentSwizzle::eIdentity)
+			.setG(vk::ComponentSwizzle::eIdentity)
+			.setB(vk::ComponentSwizzle::eIdentity)
+			.setA(vk::ComponentSwizzle::eIdentity);
+
+		vk::ImageSubresourceRange subresourceRange{};
+		subresourceRange
+			.setAspectMask(vk::ImageAspectFlagBits::eColor)
+			.setBaseMipLevel(0)
+			.setLevelCount(1)
+			.setBaseArrayLayer(0)
+			.setLayerCount(1);
+
+		vk::ImageViewCreateInfo createInfo{};
+		createInfo
+			.setViewType(vk::ImageViewType::e2D)
+			.setFormat(vkContext_.swapChainImageFormat)
+			.setComponents(componentMapping)
+			.setSubresourceRange(subresourceRange);
+
+		vkContext_.swapChainImageViews.reserve(vkContext_.swapChainImages.size());
+		for (const vk::Image image : vkContext_.swapChainImages)
 		{
-			return res;
+			createInfo.setImage(image);
+
+			auto imageView = vkContext_.device.createImageView(createInfo);
+			VK_CHECK(imageView);
+
+			vkContext_.swapChainImageViews.emplace_back(std::move(*imageView));
 		}
 
-		vulkanContext_.swapChain = std::move(swapChain);
 		return vk::Result::eSuccess;
 	}
 
@@ -579,13 +632,8 @@ private:
 
 	void Cleanup()
 	{
-		window_.Reset();
-
-		if (grove_)
-		{
-			grove_->Shutdown();
-			grove_.Reset();
-		}
+		window_.reset();
+		engine_.Shutdown();
 	}
 
 	QueueFamilyIndices FindQueueFamilies(vk::raii::PhysicalDevice physicalDevice)
@@ -606,8 +654,7 @@ private:
 				indices.graphicsFamily = i;
 			}
 
-			auto [res, presentSupport] = physicalDevice.getSurfaceSupportKHR(i, vulkanContext_.surface);
-
+			vk::Bool32 presentSupport = physicalDevice.getSurfaceSupportKHR(i, vkContext_.surface);
 			if (presentSupport)
 			{
 				indices.presentFamily = i;
@@ -622,7 +669,7 @@ private:
 		for (const vk::SurfaceFormatKHR& format : swapChainDetails.formats)
 		{
 			// pick srgb if available
-			if (format.format == vk::Format::eR8G8B8A8Srgb &&
+			if (format.format == vk::Format::eB8G8R8A8Srgb &&
 				format.colorSpace == vk::ColorSpaceKHR::eSrgbNonlinear)
 			{
 				return format;
@@ -647,7 +694,7 @@ private:
 
 		// fifo guaranteed by spec
 		GRV_LOG_WARN(GRV_CHANNEL(System), 
-			"VSync setting '{}' (mode '{}') is not available. Falling back to FIFO",
+			"event=vk.swapChain.presentModeUnavailable requested=\"{}\" requestedMode=\"{}\" fallback=\"FIFO\"",
 			ToString(vsyncSetting),
 			vk::to_string(requestedMode));
 
@@ -670,39 +717,15 @@ private:
 		};
 	}
 
-	vk::Result GetSwapChainSupportDetails(SwapChainSupportDetails& outDetails)
+	SwapChainSupportDetails GetSwapChainSupportDetails()
 	{
-		{
-			auto [res, caps] = vulkanContext_.physicalDevice.getSurfaceCapabilitiesKHR(vulkanContext_.surface);
-			if (res != vk::Result::eSuccess)
-			{
-				GRV_LOG_ERROR(GRV_CHANNEL(System), "Failed to get surface capabilities: {}", vk::to_string(res));
-				return res;
-			}
-			outDetails.capabilities = std::move(caps);
-		}
+		SwapChainSupportDetails outDetails{};
 
-		{
-			auto [res, fmts] = vulkanContext_.physicalDevice.getSurfaceFormatsKHR(vulkanContext_.surface);
-			if (res != vk::Result::eSuccess)
-			{
-				GRV_LOG_ERROR(GRV_CHANNEL(System), "Failed to get surface formats: {}", vk::to_string(res));
-				return res;
-			}
-			outDetails.formats = std::move(fmts);
-		}
+		outDetails.capabilities = vkContext_.physicalDevice.getSurfaceCapabilitiesKHR(vkContext_.surface);
+		outDetails.formats = vkContext_.physicalDevice.getSurfaceFormatsKHR(vkContext_.surface);
+		outDetails.presentModes = vkContext_.physicalDevice.getSurfacePresentModesKHR(vkContext_.surface);
 
-		{
-			auto [res, modes] = vulkanContext_.physicalDevice.getSurfacePresentModesKHR(vulkanContext_.surface);
-			if (res != vk::Result::eSuccess)
-			{
-				GRV_LOG_ERROR(GRV_CHANNEL(System), "Failed to get surface present modes: {}", vk::to_string(res));
-				return res;
-			}
-			outDetails.presentModes = std::move(modes);
-		}
-
-		return vk::Result::eSuccess;
+		return outDetails;
 	}
 
 	vk::DebugUtilsMessengerCreateInfoEXT GetDebugUtilsCreateInfo()
@@ -740,28 +763,28 @@ private:
 	{
 		if (severity & vk::DebugUtilsMessageSeverityFlagBitsEXT::eVerbose)
 		{
-			GRV_LOG_TRACE(GRV_CHANNEL(System), "{} - {}: {}", pCallbackData->messageIdNumber, pCallbackData->pMessageIdName, pCallbackData->pMessage);
+			GRV_LOG_TRACE(GRV_CHANNEL(System), "event=vk.validation msgId={} msgIdName=\"{}\" msg=\"{}\"", pCallbackData->messageIdNumber, pCallbackData->pMessageIdName, pCallbackData->pMessage);
 		}
 		else if (severity & vk::DebugUtilsMessageSeverityFlagBitsEXT::eInfo)
 		{
-			GRV_LOG_INFO(GRV_CHANNEL(System), "{} - {}: {}", pCallbackData->messageIdNumber, pCallbackData->pMessageIdName, pCallbackData->pMessage);
+			GRV_LOG_INFO(GRV_CHANNEL(System), "event=vk.validation msgId={} msgIdName=\"{}\" msg=\"{}\"", pCallbackData->messageIdNumber, pCallbackData->pMessageIdName, pCallbackData->pMessage);
 		}
 		else if (severity & vk::DebugUtilsMessageSeverityFlagBitsEXT::eWarning)
 		{
-			GRV_LOG_WARN(GRV_CHANNEL(System), "{} - {}: {}", pCallbackData->messageIdNumber, pCallbackData->pMessageIdName, pCallbackData->pMessage);
+			GRV_LOG_WARN(GRV_CHANNEL(System), "event=vk.validation msgId={} msgIdName=\"{}\" msg=\"{}\"", pCallbackData->messageIdNumber, pCallbackData->pMessageIdName, pCallbackData->pMessage);
 		}
 		else if (severity & vk::DebugUtilsMessageSeverityFlagBitsEXT::eError)
 		{
-			GRV_LOG_ERROR(GRV_CHANNEL(System), "{} - {}: {}", pCallbackData->messageIdNumber, pCallbackData->pMessageIdName, pCallbackData->pMessage);
+			GRV_LOG_ERROR(GRV_CHANNEL(System), "event=vk.validation msgId={} msgIdName=\"{}\" msg=\"{}\"", pCallbackData->messageIdNumber, pCallbackData->pMessageIdName, pCallbackData->pMessage);
 		}
 
 		return vk::False;
 	}
 
 private:
-	grove::BoxPtr<grove::GroveEngine> grove_;
-	grove::BoxPtr<grove::Window>      window_;
-	VulkanContext vulkanContext_;
+	grove::GroveEngine             engine_;
+	std::unique_ptr<grove::Window> window_;
+	VulkanContext                  vkContext_;
 };
 
 int main()
@@ -770,7 +793,7 @@ int main()
 
 	if (!app.Run())
 	{
-		GRV_LOG_FATAL(GRV_CHANNEL(System), "Application failed to start due to initialization errors.");
+		GRV_LOG_FATAL(GRV_CHANNEL(System), "event=app.initFailed");
 		GRV_DEBUG_BREAK();
 		return EXIT_FAILURE;
 	}
