@@ -1,12 +1,105 @@
-#include <windows.h>
-
-#include "grove/core/window.hpp"
+#include "grove/core/config.hpp"
 #include "grove/platform/win32_window.hpp"
+
+#if USE_GLFW
+#define GLFW_EXPOSE_NATIVE_WIN32
+#include <GLFW/glfw3.h>
+#include <GLFW/glfw3native.h>
+#endif // USE_GLFW
+
 #include "grove/core/assert.hpp"
 #include "grove/core/logging/log_macros.hpp"
 
 namespace grove
 {
+#if USE_GLFW
+	Win32Window::Win32Window(const WindowCreateInfo& createInfo)
+	{
+		GRV_LOG_INFO(GRV_CHANNEL(System), "event=window.creating width={} height={}", createInfo.width, createInfo.height);
+		Init(createInfo);
+	}
+
+	Win32Window::~Win32Window()
+	{
+		Shutdown();
+	}
+
+	void Win32Window::OnUpdate()
+	{
+		glfwPollEvents();
+	}
+
+	u32 Win32Window::GetWidth() const
+	{
+		int width;
+		glfwGetFramebufferSize(window_, &width, nullptr);
+		return static_cast<u32>(width);
+	}
+
+	u32 Win32Window::GetHeight() const
+	{
+		int height;
+		glfwGetFramebufferSize(window_, nullptr, &height);
+		return static_cast<u32>(height);
+	}
+
+	void* Win32Window::GetNativeHandle() const
+	{
+		return window_;
+	}
+
+	HINSTANCE Win32Window::GetHInstance() const
+	{
+		return GetModuleHandle(nullptr);
+	}
+
+	HWND Win32Window::GetHWND() const
+	{
+		return glfwGetWin32Window(window_);
+	}
+
+	bool Win32Window::Init(const WindowCreateInfo& createInfo)
+	{
+		if (!glfwInit())
+		{
+			GRV_LOG_ERROR(GRV_CHANNEL(System), "event=glfw.init.failed");
+			return false;
+		}
+
+		glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+
+		window_ = glfwCreateWindow(
+			createInfo.width,
+			createInfo.height,
+			createInfo.title.c_str(),
+			nullptr,
+			nullptr
+		);
+
+		if (!window_)
+		{
+			GRV_LOG_ERROR(GRV_CHANNEL(System), "event=glfw.window.createFailed title=\"{}\" width={} height={}", createInfo.title, createInfo.width, createInfo.height);
+			Shutdown();
+			return false;
+		}
+
+		return true;
+	}
+
+	bool Win32Window::Shutdown()
+	{
+		if (window_)
+		{
+			glfwDestroyWindow(window_);
+			window_ = nullptr;
+		}
+
+		glfwTerminate();
+		return true;
+	}
+#endif // USE_GLFW
+
+#if USE_WIN32
 	namespace
 	{
 		void OpenDebugConsole()
@@ -157,5 +250,5 @@ namespace grove
 
 		return DefWindowProc(hWnd, uMsg, wParam, lParam);
 	}
-
+#endif // USE_WIN32
 }

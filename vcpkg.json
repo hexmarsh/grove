@@ -15,6 +15,10 @@
     {
       "name": "vulkan",
       "version>=": "2023-12-17#0"
+    },
+    {
+      "name": "shader-slang",
+      "version>=": "2025.22.1"
     }
   ]
 }

@@ -9,6 +9,9 @@
 #include <unordered_set>
 #include <utility>
 #include <vector>
+#include <fstream>
+#include <filesystem>
+#include "grove/core/math.hpp"
 
 #define VULKAN_HPP_NO_STRUCT_CONSTRUCTORS
 #define VULKAN_HPP_NO_EXCEPTIONS
@@ -21,7 +24,7 @@
 #include "grove/core/assert.hpp"
 #include "grove/core/grove_engine.hpp"
 #include "grove/core/typedefs.hpp"
-#include "grove/platform/glfw_window.hpp"
+#include "grove/platform/win32_window.hpp"
 
 #define KiB(x) ((x) >> 10)
 #define MiB(x) ((x) >> 20)
@@ -171,6 +174,23 @@ namespace
 			[](const vk::ExtensionProperties& prop) -> std::string_view { return prop.extensionName; }
 		);
 	}
+	
+	std::expected<std::vector<char>, std::string> ReadFile(const std::string& filename)
+	{
+		std::ifstream file(filename, std::ios::ate | std::ios::binary);
+
+		if (!file.is_open())
+		{
+			return std::unexpected(std::format("{} could not be opened for reading.", filename));
+		}
+
+		std::vector<char> buffer(file.tellg());
+		file.seekg(0, std::ios::beg);
+		file.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+		file.close();
+
+		return buffer;
+	}
 }
 
 struct QueueFamilyIndices
@@ -272,18 +292,19 @@ do { \
 
 	bool InitVulkan()
 	{
-		VK_INIT_STEP(CreateInstance(),      "Failed to create Vulkan Instance");
+		VK_INIT_STEP(CreateInstance(), "Failed to create Vulkan Instance");
 
 		if (vkContext_.enableValidationLayers)
 		{
 			VK_INIT_STEP(SetupDebugMessenger(), "Failed to setup Vulkan Debug Messenger");
 		}
 
-		VK_INIT_STEP(CreateSurface(),       "Failed to create Vulkan Surface");
-		VK_INIT_STEP(PickPhysicalDevice(),  "Failed to pick Vulkan Physical Device");
-		VK_INIT_STEP(CreateLogicalDevice(), "Failed to create Vulkan Logical Device");
-		VK_INIT_STEP(CreateSwapChain(),     "Failed to create Vulkan SwapChain");
-		VK_INIT_STEP(CreateImageViews(),    "Failed to create Vulkan Image Views");
+		VK_INIT_STEP(CreateSurface(),          "Failed to create Vulkan Surface");
+		VK_INIT_STEP(PickPhysicalDevice(),     "Failed to pick Vulkan Physical Device");
+		VK_INIT_STEP(CreateLogicalDevice(),    "Failed to create Vulkan Logical Device");
+		VK_INIT_STEP(CreateSwapChain(),        "Failed to create Vulkan SwapChain");
+		VK_INIT_STEP(CreateImageViews(),       "Failed to create Vulkan Image Views");
+		VK_INIT_STEP(CreateGraphicsPipeline(), "Failed to create Vulkan Graphics Pipeline");
 		return true;
 	}
 #undef VK_INIT_STEP
@@ -350,12 +371,12 @@ do { \
 
 	vk::Result CreateSurface()
 	{
-		auto* glfwWindow{ static_cast<grove::GLFWWindow*>(window_.get()) };
+		auto* win32Window{ static_cast<grove::Win32Window*>(window_.get()) };
 
 		const vk::Win32SurfaceCreateInfoKHR createInfo
 		{
-			.hinstance { glfwWindow->GetHInstance() },
-			.hwnd      { glfwWindow->GetHWND() }
+			.hinstance { win32Window->GetHInstance() },
+			.hwnd      { win32Window->GetHWND() }
 		};
 
 		auto surf = vkContext_.instance.createWin32SurfaceKHR(createInfo);
@@ -621,6 +642,45 @@ do { \
 		return vk::Result::eSuccess;
 	}
 
+	vk::Result CreateGraphicsPipeline()
+	{
+		auto shaderCode = ReadFile("../engine/assets/shaders/slang.spv");
+		if (!shaderCode)
+		{
+			GRV_LOG_ERROR(GRV_CHANNEL(System), "event=vk.shader.read.failed msg='{}'", shaderCode.error());
+			return vk::Result::eErrorInitializationFailed;
+		}
+
+		auto shaderModuleExp = CreateShaderModule(*shaderCode);
+		if (!shaderModuleExp)
+		{
+			GRV_LOG_ERROR(GRV_CHANNEL(System), "event=vk.shaderModule.create.failed result='{}'", vk::to_string(shaderModuleExp.error()));
+			return shaderModuleExp.error();
+		}
+
+		vk::raii::ShaderModule shaderModule = std::move(*shaderModuleExp);
+
+		vk::PipelineShaderStageCreateInfo vertShaderStageInfo{};
+		vertShaderStageInfo
+			.setStage(vk::ShaderStageFlagBits::eVertex)
+			.setModule(shaderModule)
+			.setPName("vertMain");
+
+		vk::PipelineShaderStageCreateInfo fragShaderStageInfo{};
+		fragShaderStageInfo
+			.setStage(vk::ShaderStageFlagBits::eFragment)
+			.setModule(shaderModule)
+			.setPName("fragMain");
+
+		vk::PipelineShaderStageCreateInfo shaderStages[]
+		{
+			vertShaderStageInfo,
+			fragShaderStageInfo
+		};
+
+		return vk::Result::eSuccess;
+	}
+
 	void MainLoop()
 	{
 		// TODO: get back to this when input system is ready
@@ -715,6 +775,17 @@ do { \
 			std::clamp<grove::u32>(window_->GetWidth(), caps.minImageExtent.width, caps.maxImageExtent.width),
 			std::clamp<grove::u32>(window_->GetHeight(), caps.minImageExtent.height, caps.maxImageExtent.height)
 		};
+	}
+
+	[[nodiscard]] std::expected<vk::raii::ShaderModule, vk::Result> CreateShaderModule(const std::vector<char>& code) const
+	{
+		vk::ShaderModuleCreateInfo createInfo
+		{
+			.codeSize { code.size() * sizeof(char) },
+			.pCode    { reinterpret_cast<const grove::u32*>(code.data()) }
+		};
+
+		return vkContext_.device.createShaderModule(createInfo);
 	}
 
 	SwapChainSupportDetails GetSwapChainSupportDetails()
