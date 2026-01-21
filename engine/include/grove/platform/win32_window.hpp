@@ -38,7 +38,7 @@ namespace grove
 	};
 #endif // USE_GLFW
 
-// Maybe continued later
+// Win32 api - Maybe continued later
 #if USE_WIN32
 	class Win32Window : public Window
 	{

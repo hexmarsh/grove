@@ -1,3 +1,4 @@
+# Library setup
 add_library(grove_engine)
 
 target_sources(grove_engine
@@ -33,6 +34,7 @@ if(WIN32)
 	)
 endif()
 
+# Dependencies
 find_package(glm CONFIG REQUIRED)
 find_package(Vulkan REQUIRED)
 find_package(glfw3 CONFIG REQUIRED)
@@ -44,54 +46,20 @@ target_link_libraries(grove_engine
 		Vulkan::Vulkan
 )
 
-set(_vcpkg_installed_dir "${CMAKE_BINARY_DIR}/vcpkg_installed")
-
-find_program(SLANGC_EXECUTABLE
-	NAMES slangc slangc.exe
-	HINTS "${_vcpkg_installed_dir}/${VCPKG_TARGET_TRIPLET}/tools/shader-slang"
-)
-
-if(NOT SLANGC_EXECUTABLE)
-	message(FATAL_ERROR "slangc not found. Looked in: ${_vcpkg_installed_dir}/${VCPKG_TARGET_TRIPLET}/tools/shader-slang")
-endif()
-
-message(STATUS "slangc: ${SLANGC_EXECUTABLE}")
-
-function(add_slang_shader_target TARGET)
-	cmake_parse_arguments(SHADER "" "" "SOURCES" ${ARGN})
-
-
-	if(NOT SHADER_SOURCES)
-		message(FATAL_ERROR "add_slang_shader_target(${TARGET}): no SOURCES provided")
-	endif()
-
-	set(SHADERS_DIR "${CMAKE_CURRENT_LIST_DIR}/assets/shaders")
-	set(SHADER_OUT "${SHADERS_DIR}/slang.spv")
-
-	add_custom_command(
-		OUTPUT "${SHADER_OUT}"
-		COMMAND "${CMAKE_COMMAND}" -E make_directory "${SHADERS_DIR}"
-
-		COMMAND "${SLANGC_EXECUTABLE}"
-				${SHADER_SOURCES}
-				-target spirv
-				-profile spirv_1_4
-				-emit-spirv-directly
-				-fvk-use-entrypoint-name
-				-entry vertMain
-				-entry fragMain
-				-o "${SHADER_OUT}"
-
-		DEPENDS ${SHADER_SOURCES}
-		COMMENT "Compiling Slang Shaders -> SPIR-V"
-		VERBATIM
-	)
-
-	add_custom_target(${TARGET} DEPENDS "${SHADER_OUT}")
-endfunction()
+# Shaders
+include(${CMAKE_SOURCE_DIR}/cmake/add_slang_target.cmake)
 
 add_slang_shader_target(spirv_shaders SOURCES
 	"${CMAKE_SOURCE_DIR}/engine/assets/shaders/shader.slang"
 )
 
-add_dependencies(grove_engine spirv_shaders)
+# Copy assets
+add_custom_target(copy_assets
+	COMMAND ${CMAKE_COMMAND} -E copy_directory
+		"${CMAKE_CURRENT_SOURCE_DIR}/assets"
+		"${CMAKE_CURRENT_BINARY_DIR}/assets"
+	COMMENT "Copying assets to build directory"
+)
+
+add_dependencies(copy_assets spirv_shaders)
+add_dependencies(grove_engine copy_assets)

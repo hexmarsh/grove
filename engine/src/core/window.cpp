@@ -5,8 +5,6 @@
 #include "grove/platform/win32_window.hpp"
 #endif
 
-#include "grove/core/memory/box_ptr.hpp"
-
 namespace grove
 {
 	std::unique_ptr<Window> Window::Create(const WindowCreateInfo& createInfo)

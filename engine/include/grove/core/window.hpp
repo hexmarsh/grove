@@ -1,9 +1,9 @@
 #pragma once
 
 #include <string>
+#include <memory>
 
 #include "grove/core/typedefs.hpp"
-#include <memory>
 
 namespace grove
 {

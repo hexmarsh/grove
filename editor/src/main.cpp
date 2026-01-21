@@ -11,6 +11,10 @@
 #include <vector>
 #include <fstream>
 #include <filesystem>
+#include <ranges>
+#include <bit>
+#include <cmath>
+
 #include "grove/core/math.hpp"
 
 #define VULKAN_HPP_NO_STRUCT_CONSTRUCTORS
@@ -30,11 +34,11 @@
 #define MiB(x) ((x) >> 20)
 #define GiB(x) ((x) >> 30)
 
-#define VK_CHECK(result) \
+#define VK_CHECK(result, failureEvent) \
 do { \
 	if (!result)\
 	{\
-		GRV_LOG_ERROR(GRV_CHANNEL(System), "event=vk.error result={}", vk::to_string(result.error()));\
+		GRV_LOG_ERROR(GRV_CHANNEL(System), "event={} result={}", failureEvent, vk::to_string(result.error()));\
 		return result.error();\
 	}\
 } while(0)
@@ -228,8 +232,12 @@ struct VulkanContext
 	vk::raii::Queue                  presentQueue           { nullptr };
 	std::vector<vk::Image>           swapChainImages;
 	std::vector<vk::raii::ImageView> swapChainImageViews;
-	vk::Format                       swapChainImageFormat   { vk::Format::eUndefined };
+	vk::SurfaceFormatKHR             swapChainSurfaceFormat { vk::Format::eUndefined };
 	vk::Extent2D                     swapChainExtent;
+
+	// pipeline
+	vk::raii::PipelineLayout         pipelineLayout         { nullptr };
+	vk::raii::Pipeline               graphicsPipeline       { nullptr };
 
 	#if defined(NDEBUG)
 	bool                             enableValidationLayers { false };
@@ -333,7 +341,7 @@ do { \
 			.applicationVersion { VK_MAKE_VERSION(1, 0, 0) },
 			.pEngineName        { "GroveEngine" },
 			.engineVersion      { VK_MAKE_VERSION(1, 0, 0) },
-			.apiVersion         { vk::ApiVersion14 }
+			.apiVersion         { vk::ApiVersion13 }
 		};
 
 		std::vector<const char*> layers;
@@ -342,13 +350,13 @@ do { \
 			layers.assign(kValidationLayers.begin(), kValidationLayers.end());
 		}
 
-		vk::InstanceCreateInfo createInfo{};
-		createInfo.setPApplicationInfo(&appInfo)
+		vk::InstanceCreateInfo instanceInfo{};
+		instanceInfo.setPApplicationInfo(&appInfo)
 			      .setPEnabledLayerNames(layers)
 		          .setPEnabledExtensionNames(instanceExtensions);
 
-		auto instance = vkContext_.context.createInstance(createInfo);
-		VK_CHECK(instance);
+		auto instance = vkContext_.context.createInstance(instanceInfo);
+		VK_CHECK(instance, "vk.instance.create.failed");
 
 		vkContext_.instance = std::move(*instance);
 		GRV_LOG_INFO(GRV_CHANNEL(System), "event=vk.instance.created apiVersion={}", vk::ApiVersion14);
@@ -359,10 +367,10 @@ do { \
 	{
 		GRV_ASSERT(vkContext_.enableValidationLayers);
 
-		vk::DebugUtilsMessengerCreateInfoEXT createInfo{ GetDebugUtilsCreateInfo() };
+		vk::DebugUtilsMessengerCreateInfoEXT debugInfo{ GetDebugUtilsCreateInfo() };
 
-		auto dbg = vkContext_.instance.createDebugUtilsMessengerEXT(createInfo);
-		VK_CHECK(dbg);
+		auto dbg = vkContext_.instance.createDebugUtilsMessengerEXT(debugInfo);
+		VK_CHECK(dbg, "vk.debugUtils.create.failed");
 		vkContext_.debugMessenger = std::move(*dbg);
 
 		GRV_LOG_INFO(GRV_CHANNEL(System), "event=vk.debugMessenger.created");
@@ -373,16 +381,16 @@ do { \
 	{
 		auto* win32Window{ static_cast<grove::Win32Window*>(window_.get()) };
 
-		const vk::Win32SurfaceCreateInfoKHR createInfo
+		const vk::Win32SurfaceCreateInfoKHR surfaceInfo
 		{
 			.hinstance { win32Window->GetHInstance() },
 			.hwnd      { win32Window->GetHWND() }
 		};
 
-		auto surf = vkContext_.instance.createWin32SurfaceKHR(createInfo);
-		VK_CHECK(surf);
+		auto surface = vkContext_.instance.createWin32SurfaceKHR(surfaceInfo);
+		VK_CHECK(surface, "vk.win32Surface.create.failed");
 
-		vkContext_.surface = std::move(*surf);
+		vkContext_.surface = std::move(*surface);
 		GRV_LOG_INFO(GRV_CHANNEL(System), "event=vk.surface.created");
 		return vk::Result::eSuccess;
 	}
@@ -390,7 +398,7 @@ do { \
 	vk::Result PickPhysicalDevice()
 	{
 		auto devices = vkContext_.instance.enumeratePhysicalDevices();
-		VK_CHECK(devices);
+		VK_CHECK(devices, "vk.physicalDevices.enumerate.failed");
 
 		if (devices->empty())
 		{
@@ -426,17 +434,19 @@ do { \
 
 		if (!indices.IsComplete() ||
 			!deviceFeats.geometryShader ||
-			!AreDeviceExtensionsSupported(physicalDevice, kDeviceExtensions))
+			!AreDeviceExtensionsSupported(physicalDevice, kDeviceExtensions) ||
+			deviceProps.apiVersion <= vk::ApiVersion13
+			)
 		{
-			GRV_LOG_WARN(GRV_CHANNEL(System), "event=vk.device.unsuitable deviceName=\"{}\" missingQueues={} geometryShader={}",
+			GRV_LOG_WARN(GRV_CHANNEL(System), "event=vk.device.unsuitable deviceName=\"{}\" apiVersion={} missingQueues={} geometryShader={}",
 				std::string_view{deviceProps.deviceName},
+				deviceProps.apiVersion,
 				!indices.IsComplete(),
 				!deviceFeats.geometryShader);
 			return 0;
 		}
 
 		grove::u64 score{ 0 };
-
 		if (deviceProps.deviceType == vk::PhysicalDeviceType::eDiscreteGpu)
 		{
 			score += 1000;
@@ -459,7 +469,7 @@ do { \
 			vk::to_string(deviceProps.deviceType),
 			score,
 			(deviceProps.deviceType == vk::PhysicalDeviceType::eDiscreteGpu ? 1000 : 0),
-			GiB(vramBytes),
+			GiB(vramBytes), // NOTE: vramBytes is unsigned, which means this is 0 if < 1GB
 			deviceProps.limits.maxImageDimension2D);
 		return score;
 	}
@@ -495,11 +505,15 @@ do { \
 		using Chain = vk::StructureChain<
 			vk::DeviceCreateInfo,
 			vk::PhysicalDeviceFeatures2,
+			vk::PhysicalDeviceVulkan11Features,
 			vk::PhysicalDeviceVulkan13Features,
 			vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT
 		>;
 
 		Chain chain{};
+
+		chain.get<vk::PhysicalDeviceVulkan11Features>()
+			.setShaderDrawParameters(true);
 
 		chain.get<vk::PhysicalDeviceVulkan13Features>()
 			.setDynamicRendering(true);
@@ -507,20 +521,20 @@ do { \
 		chain.get<vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT>()
 			.setExtendedDynamicState(true);
 
-		auto& createInfo = chain.get<vk::DeviceCreateInfo>()
+		auto& deviceInfo = chain.get<vk::DeviceCreateInfo>()
 			.setPEnabledExtensionNames(kDeviceExtensions)
 			.setQueueCreateInfos(queueCreateInfos);
 
-		auto device = vkContext_.physicalDevice.createDevice(createInfo);
-		VK_CHECK(device);
-		vkContext_.device        = std::move(*device);
+		auto device = vkContext_.physicalDevice.createDevice(deviceInfo);
+		VK_CHECK(device, "vk.logicalDevice.create.failed");
+		vkContext_.device = std::move(*device);
 
 		auto graphicsQueue = vkContext_.device.getQueue(vkContext_.queueFamilyIndices.graphicsFamily.value(), 0);
-		VK_CHECK(graphicsQueue);
+		VK_CHECK(graphicsQueue, "vk.logicalDevice.getGraphicsQueue.failed");
 		vkContext_.graphicsQueue = std::move(*graphicsQueue);
 
 		auto presentQueue  = vkContext_.device.getQueue(vkContext_.queueFamilyIndices.presentFamily.value(), 0);
-		VK_CHECK(presentQueue);
+		VK_CHECK(presentQueue, "vk.logicalDevice.getPresentQueue.failed");
 		vkContext_.presentQueue = std::move(*presentQueue);
 
 		GRV_LOG_INFO(GRV_CHANNEL(System), "event=vk.logicalDevice.created graphicsFamily={} presentFamily={} graphicsQueueIndex={} presentQueueIndex={}",
@@ -547,8 +561,8 @@ do { \
 			imageCount = caps.maxImageCount;
 		}
 
-		vk::SwapchainCreateInfoKHR createInfo;
-		createInfo
+		vk::SwapchainCreateInfoKHR swapChainInfo;
+		swapChainInfo
 			.setFlags(vk::SwapchainCreateFlagsKHR())
 			.setSurface(vkContext_.surface)
 			.setMinImageCount(imageCount)
@@ -566,33 +580,33 @@ do { \
 				vkContext_.queueFamilyIndices.presentFamily.value()
 			};
 
-			createInfo
+			swapChainInfo
 				.setImageSharingMode(vk::SharingMode::eConcurrent)
 				.setQueueFamilyIndexCount(2)
 				.setQueueFamilyIndices(queueFamilyIndices);
 		}
 		else
 		{
-			createInfo
+			swapChainInfo
 				.setImageSharingMode(vk::SharingMode::eExclusive)
 				.setQueueFamilyIndexCount(0)      // optional
 				.setPQueueFamilyIndices(nullptr); // optional
 		}
 
-		createInfo
+		swapChainInfo
 			.setPreTransform(caps.currentTransform)
 			.setCompositeAlpha(vk::CompositeAlphaFlagBitsKHR::eOpaque)
 			.setPresentMode(presentMode)
 			.setClipped(vk::True)
 			.setOldSwapchain(VK_NULL_HANDLE);
 
-		auto swapChain = vkContext_.device.createSwapchainKHR(createInfo);
-		VK_CHECK(swapChain);
+		auto swapChain = vkContext_.device.createSwapchainKHR(swapChainInfo);
+		VK_CHECK(swapChain, "vk.logicalDevice.createSwapChain.failed");
 
-		vkContext_.swapChain = std::move(*swapChain);
-		vkContext_.swapChainImageFormat = surfaceFormat.format;
-		vkContext_.swapChainExtent = std::move(extent);
-		vkContext_.swapChainImages = vkContext_.swapChain.getImages();
+		vkContext_.swapChain              = std::move(*swapChain);
+		vkContext_.swapChainSurfaceFormat = std::move(surfaceFormat);
+		vkContext_.swapChainExtent        = std::move(extent);
+		vkContext_.swapChainImages        = vkContext_.swapChain.getImages();
 
 		GRV_LOG_INFO(GRV_CHANNEL(System), "event=vk.swapChain.created format={} extent={}x{} imageCount={}",
 			vk::to_string(surfaceFormat.format),
@@ -608,33 +622,39 @@ do { \
 
 		vk::ComponentMapping componentMapping{};
 		componentMapping
+			// don't rearrange color channels
 			.setR(vk::ComponentSwizzle::eIdentity)
 			.setG(vk::ComponentSwizzle::eIdentity)
 			.setB(vk::ComponentSwizzle::eIdentity)
 			.setA(vk::ComponentSwizzle::eIdentity);
 
+		// which part of the image this view can access
 		vk::ImageSubresourceRange subresourceRange{};
 		subresourceRange
 			.setAspectMask(vk::ImageAspectFlagBits::eColor)
+
+			// expose only mip level 0 (full-resolution mip)
 			.setBaseMipLevel(0)
 			.setLevelCount(1)
+
+			// expose only array layer 0 (non-array image)
 			.setBaseArrayLayer(0)
 			.setLayerCount(1);
 
-		vk::ImageViewCreateInfo createInfo{};
-		createInfo
+		vk::ImageViewCreateInfo imgViewInfo{};
+		imgViewInfo
 			.setViewType(vk::ImageViewType::e2D)
-			.setFormat(vkContext_.swapChainImageFormat)
+			.setFormat(vkContext_.swapChainSurfaceFormat.format)
 			.setComponents(componentMapping)
 			.setSubresourceRange(subresourceRange);
 
 		vkContext_.swapChainImageViews.reserve(vkContext_.swapChainImages.size());
 		for (const vk::Image image : vkContext_.swapChainImages)
 		{
-			createInfo.setImage(image);
+			imgViewInfo.setImage(image);
 
-			auto imageView = vkContext_.device.createImageView(createInfo);
-			VK_CHECK(imageView);
+			auto imageView = vkContext_.device.createImageView(imgViewInfo);
+			VK_CHECK(imageView, "vk.logicalDevice.createImageView.failed");
 
 			vkContext_.swapChainImageViews.emplace_back(std::move(*imageView));
 		}
@@ -644,7 +664,7 @@ do { \
 
 	vk::Result CreateGraphicsPipeline()
 	{
-		auto shaderCode = ReadFile("../engine/assets/shaders/slang.spv");
+		auto shaderCode = ReadFile("assets/shaders/slang.spv");
 		if (!shaderCode)
 		{
 			GRV_LOG_ERROR(GRV_CHANNEL(System), "event=vk.shader.read.failed msg='{}'", shaderCode.error());
@@ -654,7 +674,7 @@ do { \
 		auto shaderModuleExp = CreateShaderModule(*shaderCode);
 		if (!shaderModuleExp)
 		{
-			GRV_LOG_ERROR(GRV_CHANNEL(System), "event=vk.shaderModule.create.failed result='{}'", vk::to_string(shaderModuleExp.error()));
+			GRV_LOG_ERROR(GRV_CHANNEL(System), "event=vk.shaderModule.create.failed msg='{}'", vk::to_string(shaderModuleExp.error()));
 			return shaderModuleExp.error();
 		}
 
@@ -678,6 +698,105 @@ do { \
 			fragShaderStageInfo
 		};
 
+		vk::PipelineVertexInputStateCreateInfo vertexInputInfo{};
+
+		vk::PipelineInputAssemblyStateCreateInfo assemblyInputInfo{};
+		assemblyInputInfo
+			.setTopology(vk::PrimitiveTopology::eTriangleList);
+
+		vk::PipelineViewportStateCreateInfo viewportState{};
+		viewportState
+			.setViewportCount(1)
+			.setScissorCount(1);
+
+		vk::PipelineRasterizationStateCreateInfo rasterizer{};
+		rasterizer
+			.setDepthClampEnable(vk::False)
+			.setRasterizerDiscardEnable(vk::False)
+			.setPolygonMode(vk::PolygonMode::eFill)
+			.setCullMode(vk::CullModeFlagBits::eBack)
+			.setFrontFace(vk::FrontFace::eClockwise)
+			.setDepthBiasEnable(vk::False)
+			.setDepthBiasSlopeFactor(1.0f)
+			.setLineWidth(1.0f);
+
+		vk::PipelineMultisampleStateCreateInfo multisampling{};
+		multisampling
+			.setRasterizationSamples(vk::SampleCountFlagBits::e1)
+			.setSampleShadingEnable(vk::False);
+
+		vk::PipelineColorBlendAttachmentState colorBlendAttachement{};
+		colorBlendAttachement
+			.setBlendEnable(vk::True)
+
+			// allowed channels to overwrite
+			.setColorWriteMask(vk::ColorComponentFlagBits::eR | 
+				               vk::ColorComponentFlagBits::eG |
+			                   vk::ColorComponentFlagBits::eB |
+				               vk::ColorComponentFlagBits::eA)
+
+			// alpha blend color values
+			// out = (srcColor * srcAlpha) + (dstColor * (1 - srcAlpha))
+			.setSrcColorBlendFactor(vk::BlendFactor::eSrcAlpha)
+			.setDstColorBlendFactor(vk::BlendFactor::eOneMinusSrcAlpha)
+			.setColorBlendOp(vk::BlendOp::eAdd)
+
+			// overwrite alpha value
+			// outAlpha = (srcAlpha * 1) + (dstAlpha * 0)
+			.setSrcAlphaBlendFactor(vk::BlendFactor::eOne)
+			.setDstAlphaBlendFactor(vk::BlendFactor::eZero)
+			.setAlphaBlendOp(vk::BlendOp::eAdd);
+
+		vk::PipelineColorBlendStateCreateInfo colorBlending{};
+		colorBlending
+			.setLogicOpEnable(vk::False)
+			.setLogicOp(vk::LogicOp::eCopy)
+			.setAttachments(colorBlendAttachement);
+
+		vk::PipelineLayoutCreateInfo pipelineLayoutInfo{};
+		pipelineLayoutInfo
+			.setSetLayoutCount(0)
+			.setPushConstantRangeCount(0);
+
+		std::vector<vk::DynamicState> dynamicStates
+		{
+			vk::DynamicState::eViewport,
+			vk::DynamicState::eScissor
+		};
+		vk::PipelineDynamicStateCreateInfo dynamicState{};
+		dynamicState.setDynamicStates(dynamicStates);
+
+		auto pipelineLayout = vkContext_.device.createPipelineLayout(pipelineLayoutInfo);
+		VK_CHECK(pipelineLayout, "vk.logicalDevice.createPipelineLayout.failed");
+		vkContext_.pipelineLayout = std::move(*pipelineLayout);
+
+		vk::StructureChain<
+			vk::GraphicsPipelineCreateInfo,
+			vk::PipelineRenderingCreateInfo
+		> pipelineInfoChain{};
+
+		auto& graphicsPipelineInfo = pipelineInfoChain.get<vk::GraphicsPipelineCreateInfo>();
+		graphicsPipelineInfo
+			.setStages(shaderStages)
+			.setPVertexInputState(&vertexInputInfo)
+			.setPInputAssemblyState(&assemblyInputInfo)
+			.setPViewportState(&viewportState)
+			.setPRasterizationState(&rasterizer)
+			.setPMultisampleState(&multisampling)
+			.setPColorBlendState(&colorBlending)
+			.setPDynamicState(&dynamicState)
+			.setLayout(vkContext_.pipelineLayout)
+			.setRenderPass(nullptr);
+
+		auto& pipelineRenderingInfo = pipelineInfoChain.get<vk::PipelineRenderingCreateInfo>();
+		pipelineRenderingInfo
+			.setColorAttachmentFormats(vkContext_.swapChainSurfaceFormat.format);
+
+		auto graphicsPipeline = vkContext_.device.createGraphicsPipeline(nullptr, graphicsPipelineInfo);
+		VK_CHECK(graphicsPipeline, "vk.logicalDevice.createGraphicsPipeline.failed");
+
+		vkContext_.graphicsPipeline = std::move(*graphicsPipeline);
+		GRV_LOG_INFO(GRV_CHANNEL(System), "event=vk.graphicsPipeline.created");
 		return vk::Result::eSuccess;
 	}
 
@@ -779,13 +898,13 @@ do { \
 
 	[[nodiscard]] std::expected<vk::raii::ShaderModule, vk::Result> CreateShaderModule(const std::vector<char>& code) const
 	{
-		vk::ShaderModuleCreateInfo createInfo
+		vk::ShaderModuleCreateInfo shaderModuleInfo
 		{
 			.codeSize { code.size() * sizeof(char) },
 			.pCode    { reinterpret_cast<const grove::u32*>(code.data()) }
 		};
 
-		return vkContext_.device.createShaderModule(createInfo);
+		return vkContext_.device.createShaderModule(shaderModuleInfo);
 	}
 
 	SwapChainSupportDetails GetSwapChainSupportDetails()
@@ -815,14 +934,14 @@ do { \
 			vk::DebugUtilsMessageTypeFlagBitsEXT::eValidation
 		};
 
-		vk::DebugUtilsMessengerCreateInfoEXT createInfo
+		vk::DebugUtilsMessengerCreateInfoEXT debugInfo
 		{
 			.messageSeverity { severityFlags },
 			.messageType     { messageTypeFlags },
 			.pfnUserCallback { &DebugCallback }
 		};
 
-		return createInfo;
+		return debugInfo;
 	}
 
 	static VKAPI_ATTR vk::Bool32 VKAPI_CALL DebugCallback(
