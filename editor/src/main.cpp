@@ -217,32 +217,41 @@ struct VulkanContext
 	vk::raii::Context                context;
 
 	// instance level
-	vk::raii::Instance               instance               { nullptr };
-	vk::raii::DebugUtilsMessengerEXT debugMessenger         { nullptr };
-	vk::raii::SurfaceKHR             surface                { nullptr };
+	vk::raii::Instance               instance                 { nullptr };
+	vk::raii::DebugUtilsMessengerEXT debugMessenger           { nullptr };
+	vk::raii::SurfaceKHR             surface                  { nullptr };
 
 	// device level
-	vk::raii::PhysicalDevice         physicalDevice         { nullptr };
-	vk::raii::Device                 device                 { nullptr };
-	QueueFamilyIndices               queueFamilyIndices     { };
+	vk::raii::PhysicalDevice         physicalDevice           { nullptr };
+	vk::raii::Device                 device                   { nullptr };
+	QueueFamilyIndices               queueFamilyIndices;
 
 	// swap chain & queues
-	vk::raii::SwapchainKHR           swapChain              { nullptr };
-	vk::raii::Queue                  graphicsQueue          { nullptr };
-	vk::raii::Queue                  presentQueue           { nullptr };
+	vk::raii::SwapchainKHR           swapChain                { nullptr };
+	vk::raii::Queue                  graphicsQueue            { nullptr };
+	vk::raii::Queue                  presentQueue             { nullptr };
 	std::vector<vk::Image>           swapChainImages;
 	std::vector<vk::raii::ImageView> swapChainImageViews;
-	vk::SurfaceFormatKHR             swapChainSurfaceFormat { vk::Format::eUndefined };
+	vk::SurfaceFormatKHR             swapChainSurfaceFormat;
 	vk::Extent2D                     swapChainExtent;
 
 	// pipeline
-	vk::raii::PipelineLayout         pipelineLayout         { nullptr };
-	vk::raii::Pipeline               graphicsPipeline       { nullptr };
+	vk::raii::PipelineLayout         pipelineLayout           { nullptr };
+	vk::raii::Pipeline               graphicsPipeline         { nullptr };
+
+	// Commands
+	vk::raii::CommandPool            commandPool              { nullptr };
+	vk::raii::CommandBuffer          commandBuffer            { nullptr };
+
+	// Sync
+	vk::raii::Semaphore              presentCompleteSemaphore { nullptr };
+	vk::raii::Semaphore              renderFinishedSemaphore  { nullptr };
+	vk::raii::Fence                  drawFence                { nullptr };
 
 	#if defined(NDEBUG)
-	bool                             enableValidationLayers { false };
+	bool                             enableValidationLayers   { false };
 	#else
-	bool                             enableValidationLayers { true };
+	bool                             enableValidationLayers   { true };
 	#endif
 };
 
@@ -290,29 +299,32 @@ private:
 		window_ = grove::Window::Create(windowCreateInfo);
 	}
 
-#define VK_INIT_STEP(expr, msg) \
+#define VK_INIT_STEP(expr) \
 do { \
 	if (auto r = (expr); r != vk::Result::eSuccess) {\
-		GRV_LOG_ERROR(GRV_CHANNEL(System), "event=vk.init.failed step=\"{}\" result={}", (msg), vk::to_string(r)); \
 		return false; \
 	} \
 } while (0)
 
 	bool InitVulkan()
 	{
-		VK_INIT_STEP(CreateInstance(), "Failed to create Vulkan Instance");
+		VK_INIT_STEP(CreateInstance());
 
 		if (vkContext_.enableValidationLayers)
 		{
-			VK_INIT_STEP(SetupDebugMessenger(), "Failed to setup Vulkan Debug Messenger");
+			VK_INIT_STEP(SetupDebugMessenger());
 		}
 
-		VK_INIT_STEP(CreateSurface(),          "Failed to create Vulkan Surface");
-		VK_INIT_STEP(PickPhysicalDevice(),     "Failed to pick Vulkan Physical Device");
-		VK_INIT_STEP(CreateLogicalDevice(),    "Failed to create Vulkan Logical Device");
-		VK_INIT_STEP(CreateSwapChain(),        "Failed to create Vulkan SwapChain");
-		VK_INIT_STEP(CreateImageViews(),       "Failed to create Vulkan Image Views");
-		VK_INIT_STEP(CreateGraphicsPipeline(), "Failed to create Vulkan Graphics Pipeline");
+		VK_INIT_STEP(CreateSurface());
+		VK_INIT_STEP(PickPhysicalDevice());
+		VK_INIT_STEP(CreateLogicalDevice());
+		VK_INIT_STEP(CreateSwapChain());
+		VK_INIT_STEP(CreateImageViews());
+		VK_INIT_STEP(CreateGraphicsPipeline());
+		VK_INIT_STEP(CreateCommandPool());
+		VK_INIT_STEP(CreateCommandBuffer());
+		CreateSyncObjects();
+
 		return true;
 	}
 #undef VK_INIT_STEP
@@ -359,7 +371,6 @@ do { \
 		VK_CHECK(instance, "vk.instance.create.failed");
 
 		vkContext_.instance = std::move(*instance);
-		GRV_LOG_INFO(GRV_CHANNEL(System), "event=vk.instance.created apiVersion={}", vk::ApiVersion14);
 		return vk::Result::eSuccess;
 	}
 
@@ -516,7 +527,8 @@ do { \
 			.setShaderDrawParameters(true);
 
 		chain.get<vk::PhysicalDeviceVulkan13Features>()
-			.setDynamicRendering(true);
+			.setDynamicRendering(true)
+			.setSynchronization2(true);
 
 		chain.get<vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT>()
 			.setExtendedDynamicState(true);
@@ -526,7 +538,7 @@ do { \
 			.setQueueCreateInfos(queueCreateInfos);
 
 		auto device = vkContext_.physicalDevice.createDevice(deviceInfo);
-		VK_CHECK(device, "vk.logicalDevice.create.failed");
+		VK_CHECK(device, "vk.logicalDevice.createDevice.failed");
 		vkContext_.device = std::move(*device);
 
 		auto graphicsQueue = vkContext_.device.getQueue(vkContext_.queueFamilyIndices.graphicsFamily.value(), 0);
@@ -601,7 +613,7 @@ do { \
 			.setOldSwapchain(VK_NULL_HANDLE);
 
 		auto swapChain = vkContext_.device.createSwapchainKHR(swapChainInfo);
-		VK_CHECK(swapChain, "vk.logicalDevice.createSwapChain.failed");
+		VK_CHECK(swapChain, "vk.createSwapChain.failed");
 
 		vkContext_.swapChain              = std::move(*swapChain);
 		vkContext_.swapChainSurfaceFormat = std::move(surfaceFormat);
@@ -654,7 +666,7 @@ do { \
 			imgViewInfo.setImage(image);
 
 			auto imageView = vkContext_.device.createImageView(imgViewInfo);
-			VK_CHECK(imageView, "vk.logicalDevice.createImageView.failed");
+			VK_CHECK(imageView, "vk.createImageView.failed");
 
 			vkContext_.swapChainImageViews.emplace_back(std::move(*imageView));
 		}
@@ -714,7 +726,8 @@ do { \
 			.setDepthClampEnable(vk::False)
 			.setRasterizerDiscardEnable(vk::False)
 			.setPolygonMode(vk::PolygonMode::eFill)
-			.setCullMode(vk::CullModeFlagBits::eBack)
+			//.setCullMode(vk::CullModeFlagBits::eBack)
+			.setCullMode(vk::CullModeFlagBits::eNone)
 			.setFrontFace(vk::FrontFace::eClockwise)
 			.setDepthBiasEnable(vk::False)
 			.setDepthBiasSlopeFactor(1.0f)
@@ -767,7 +780,7 @@ do { \
 		dynamicState.setDynamicStates(dynamicStates);
 
 		auto pipelineLayout = vkContext_.device.createPipelineLayout(pipelineLayoutInfo);
-		VK_CHECK(pipelineLayout, "vk.logicalDevice.createPipelineLayout.failed");
+		VK_CHECK(pipelineLayout, "vk.createPipelineLayout.failed");
 		vkContext_.pipelineLayout = std::move(*pipelineLayout);
 
 		vk::StructureChain<
@@ -793,11 +806,185 @@ do { \
 			.setColorAttachmentFormats(vkContext_.swapChainSurfaceFormat.format);
 
 		auto graphicsPipeline = vkContext_.device.createGraphicsPipeline(nullptr, graphicsPipelineInfo);
-		VK_CHECK(graphicsPipeline, "vk.logicalDevice.createGraphicsPipeline.failed");
+		VK_CHECK(graphicsPipeline, "vk.createGraphicsPipeline.failed");
 
 		vkContext_.graphicsPipeline = std::move(*graphicsPipeline);
 		GRV_LOG_INFO(GRV_CHANNEL(System), "event=vk.graphicsPipeline.created");
 		return vk::Result::eSuccess;
+	}
+
+	vk::Result CreateCommandPool()
+	{
+		vk::CommandPoolCreateInfo poolInfo{};
+		poolInfo
+			.setFlags(vk::CommandPoolCreateFlagBits::eResetCommandBuffer)
+			.setQueueFamilyIndex(vkContext_.queueFamilyIndices.graphicsFamily.value());
+
+		auto commandPool = vkContext_.device.createCommandPool(poolInfo);
+		VK_CHECK(commandPool, "vk.createCommandPool.failed");
+
+		vkContext_.commandPool = std::move(*commandPool);
+		GRV_LOG_INFO(GRV_CHANNEL(System), "event=vk.commandPool.created graphicsFamilyIndex={}", poolInfo.queueFamilyIndex);
+		return vk::Result::eSuccess;
+	}
+
+	vk::Result CreateCommandBuffer()
+	{
+		vk::CommandBufferAllocateInfo allocInfo{};
+		allocInfo
+			.setCommandPool(vkContext_.commandPool)
+			.setLevel(vk::CommandBufferLevel::ePrimary)
+			.setCommandBufferCount(1);
+
+		auto commandBuffer = vkContext_.device.allocateCommandBuffers(allocInfo);
+		VK_CHECK(commandBuffer, "vk.createCommandBuffer.failed");
+
+		vkContext_.commandBuffer = std::move(commandBuffer->front());
+		GRV_LOG_INFO(GRV_CHANNEL(System), "event=vk.commandBuffer.created level={} bufferCount={}", vk::to_string(vk::CommandBufferLevel::ePrimary), 1);
+		return vk::Result::eSuccess;
+	}
+
+	void CreateSyncObjects()
+	{
+		auto presentCompleteSemaphore = vkContext_.device.createSemaphore(vk::SemaphoreCreateInfo());
+		if (!presentCompleteSemaphore)
+		{
+			GRV_LOG_ERROR(GRV_CHANNEL(System), "event=vk.createPresentCompleteSemaphore.failed result={}", vk::to_string(presentCompleteSemaphore.error()));
+		}
+		else
+		{
+			vkContext_.presentCompleteSemaphore = std::move(*presentCompleteSemaphore);
+		}
+
+		auto renderingFinishedSemaphore = vkContext_.device.createSemaphore(vk::SemaphoreCreateInfo());
+		if (!renderingFinishedSemaphore)
+		{
+			GRV_LOG_ERROR(GRV_CHANNEL(System), "event=vk.createRenderingFinishedSemaphore.failed result={}", vk::to_string(renderingFinishedSemaphore.error()));
+		}
+		else
+		{
+			vkContext_.renderFinishedSemaphore = std::move(*renderingFinishedSemaphore);
+		}
+
+		auto drawFence = vkContext_.device.createFence(
+			{
+				.flags = vk::FenceCreateFlagBits::eSignaled
+			}
+		);
+		if (!drawFence)
+		{
+			GRV_LOG_ERROR(GRV_CHANNEL(System), "event=vk.createDrawFence.failed result={}", vk::to_string(drawFence.error()));
+		}
+		else
+		{
+			vkContext_.drawFence = std::move(*drawFence);
+		}
+	}
+
+	void RecordCommandBuffer(grove::u32 imageIndex)
+	{
+		vkContext_.commandBuffer.begin({});
+
+		TransitionImageLayout(
+			imageIndex,
+			vk::ImageLayout::eUndefined,
+			vk::ImageLayout::eColorAttachmentOptimal,
+			{},
+			vk::AccessFlagBits2::eColorAttachmentWrite,
+			vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+			vk::PipelineStageFlagBits2::eColorAttachmentOutput
+		);
+
+		vk::ClearValue clearColor = vk::ClearColorValue(0.0f, 0.0f, 0.0f, 1.0f);
+		vk::RenderingAttachmentInfo attachmentInfo{};
+		attachmentInfo
+			.setImageView(vkContext_.swapChainImageViews[imageIndex])
+			.setImageLayout(vk::ImageLayout::eColorAttachmentOptimal)
+			.setLoadOp(vk::AttachmentLoadOp::eClear)
+			.setStoreOp(vk::AttachmentStoreOp::eStore)
+			.setClearValue(clearColor);
+
+		vk::RenderingInfo renderingInfo{};
+		renderingInfo
+			.setRenderArea(
+				{
+					.offset { 0, 0 },
+					.extent { vkContext_.swapChainExtent }
+				}
+			)
+			.setLayerCount(1)
+			.setColorAttachments(attachmentInfo);
+
+		vkContext_.commandBuffer.beginRendering(renderingInfo);
+		vkContext_.commandBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, vkContext_.graphicsPipeline);
+
+		vk::Viewport viewport
+		{
+			.x        { 0.0f },
+			.y        { 0.0f },
+			.width    { static_cast<grove::f32>(vkContext_.swapChainExtent.width) },
+			.height   { static_cast<grove::f32>(vkContext_.swapChainExtent.height) },
+			.minDepth { 0.0f },
+			.maxDepth { 1.0f }
+		};
+
+		vkContext_.commandBuffer.setViewport(0, viewport);
+		vkContext_.commandBuffer.setScissor(0, vk::Rect2D(vk::Offset2D(0, 0), vkContext_.swapChainExtent));
+		vkContext_.commandBuffer.draw(3, 1, 0, 0);
+
+		vkContext_.commandBuffer.endRendering();
+
+		TransitionImageLayout(
+			imageIndex,
+			vk::ImageLayout::eColorAttachmentOptimal,
+			vk::ImageLayout::ePresentSrcKHR,
+			vk::AccessFlagBits2::eColorAttachmentWrite,
+			{},
+			vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+			vk::PipelineStageFlagBits2::eBottomOfPipe
+		);
+
+		vkContext_.commandBuffer.end();
+	}
+
+	void TransitionImageLayout(
+		grove::u32 imageIndex,
+		vk::ImageLayout oldLayout,
+		vk::ImageLayout newLayout,
+		vk::AccessFlags2 srcAccessMask,
+		vk::AccessFlags2 dstAccessMask,
+		vk::PipelineStageFlags2 srcStageMask,
+		vk::PipelineStageFlags2 dstStageMask
+	)
+	{
+		vk::ImageMemoryBarrier2 barrier{};
+		barrier
+			.setSrcAccessMask(srcAccessMask)
+			.setSrcStageMask(srcStageMask)
+			.setDstAccessMask(dstAccessMask)
+			.setDstStageMask(dstStageMask)
+			.setOldLayout(oldLayout)
+			.setNewLayout(newLayout)
+			.setSrcQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
+			.setDstQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
+			.setImage(vkContext_.swapChainImages[imageIndex])
+			.setSubresourceRange(
+				{
+					.aspectMask     { vk::ImageAspectFlagBits::eColor },
+					.baseMipLevel   { 0 },
+					.levelCount     { 1 },
+					.baseArrayLayer { 0 },
+					.layerCount     { 1 }
+				}
+			);
+
+		vk::DependencyInfo dependencyInfo{};
+		dependencyInfo
+			.setDependencyFlags({})
+			.setImageMemoryBarrierCount(1)
+			.setImageMemoryBarriers(barrier);
+
+		vkContext_.commandBuffer.pipelineBarrier2(dependencyInfo);
 	}
 
 	void MainLoop()
@@ -806,7 +993,53 @@ do { \
 		while (!glfwWindowShouldClose(static_cast<GLFWwindow*>(window_->GetNativeHandle())))
 		{
 			window_->OnUpdate();
+
+			if (auto result = DrawFrame(); result != vk::Result::eSuccess)
+			{
+				GRV_LOG_ERROR(GRV_CHANNEL(System), "event=vk.drawFrame.failed result={}", vk::to_string(result));
+			}
 		}
+
+		vkContext_.device.waitIdle();
+	}
+
+	vk::Result DrawFrame()
+	{
+		vkContext_.graphicsQueue.waitIdle();
+		vkContext_.presentQueue.waitIdle();
+
+		auto [result, imageIndex] = vkContext_.swapChain.acquireNextImage(UINT64_MAX, *vkContext_.presentCompleteSemaphore, nullptr);
+		RecordCommandBuffer(imageIndex);
+
+		vkContext_.device.resetFences(*vkContext_.drawFence);
+
+		// submit for drawing
+		vk::PipelineStageFlags waitDestinationStageMask(vk::PipelineStageFlagBits::eColorAttachmentOutput);
+		vk::SubmitInfo submitInfo{};
+		submitInfo
+			.setWaitSemaphores(*vkContext_.presentCompleteSemaphore)
+			.setWaitDstStageMask(waitDestinationStageMask)
+			.setCommandBuffers(*vkContext_.commandBuffer)
+			.setSignalSemaphores(*vkContext_.renderFinishedSemaphore);
+
+		vkContext_.graphicsQueue.submit(submitInfo, *vkContext_.drawFence);
+
+		// submit for presentation
+		result = vkContext_.device.waitForFences(*vkContext_.drawFence, vk::True, UINT64_MAX);
+		if (result != vk::Result::eSuccess)
+		{
+			GRV_LOG_ERROR(GRV_CHANNEL(System), "event=vk.waitForDrawFence.failed result={}", vk::to_string(result));
+			return result;
+		}
+
+		vk::PresentInfoKHR presentInfoKHR{};
+		presentInfoKHR
+			.setWaitSemaphores(*vkContext_.renderFinishedSemaphore)
+			.setSwapchains(*vkContext_.swapChain)
+			.setImageIndices(imageIndex);
+
+		result = vkContext_.presentQueue.presentKHR(presentInfoKHR);
+		return result;
 	}
 
 	void Cleanup()
