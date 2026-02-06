@@ -1,9 +1,17 @@
 #pragma once
-
-#include "grove/core/logging/logger.hpp"
+#include <memory>
+#include "grove/rhi/vulkan/vulkan_context.hpp"
 
 namespace grove
 {
+	struct WindowCreateInfo;
+	class Window;
+
+	struct GRVEngineCreateInfo
+	{
+		WindowCreateInfo& windowCreateInfo;
+	};
+
 	class GroveEngine
 	{
 	public:
@@ -15,10 +23,15 @@ namespace grove
 		GroveEngine(GroveEngine &&) = delete;
 		GroveEngine &operator=(GroveEngine &&) = delete;
 
-		void Init();
+		void Init(GRVEngineCreateInfo& grvCreateInfo);
 		void Shutdown();
 
 	private:
-		log::Logger logger_{ log::Level::Trace };
+		void InitWindow(WindowCreateInfo& windowCreateInfo);
+		void InitGraphics();
+
+	private:
+		std::unique_ptr<Window> window_;
+		VulkanContext vkContext_;
 	};
 }

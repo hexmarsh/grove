@@ -7,10 +7,17 @@
 
 namespace grove
 {
-	std::unique_ptr<Window> Window::Create(const WindowCreateInfo& createInfo)
+	Result<std::unique_ptr<Window>> Window::Create(const WindowCreateInfo& createInfo)
 	{
 #if GRV_PLATFORM_WINDOWS
-		return std::make_unique<Win32Window>(createInfo);
+		auto window = std::make_unique<Win32Window>();
+
+		if (Error err = window->Init(createInfo); err != Ok)
+		{
+			return std::unexpected(err);
+		}
+
+		return window;
 #else
 		GRV_ASSERT(false, "Unknown Platform");
 		return nullptr;

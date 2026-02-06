@@ -14,6 +14,7 @@
 #include <ranges>
 #include <bit>
 #include <cmath>
+#include <expected>
 
 #include "grove/core/math.hpp"
 
@@ -214,44 +215,46 @@ struct SwapChainSupportDetails
 
 struct VulkanContext
 {
-	vk::raii::Context                context;
+	vk::raii::Context                    context;
 
 	// instance level
-	vk::raii::Instance               instance                 { nullptr };
-	vk::raii::DebugUtilsMessengerEXT debugMessenger           { nullptr };
-	vk::raii::SurfaceKHR             surface                  { nullptr };
+	vk::raii::Instance                   instance                       { nullptr };
+	vk::raii::DebugUtilsMessengerEXT     debugMessenger                 { nullptr };
+	vk::raii::SurfaceKHR                 surface                        { nullptr };
 
 	// device level
-	vk::raii::PhysicalDevice         physicalDevice           { nullptr };
-	vk::raii::Device                 device                   { nullptr };
-	QueueFamilyIndices               queueFamilyIndices;
+	vk::raii::PhysicalDevice             physicalDevice                 { nullptr };
+	vk::raii::Device                     device                         { nullptr };
+	QueueFamilyIndices                   queueFamilyIndices;
 
 	// swap chain & queues
-	vk::raii::SwapchainKHR           swapChain                { nullptr };
-	vk::raii::Queue                  graphicsQueue            { nullptr };
-	vk::raii::Queue                  presentQueue             { nullptr };
-	std::vector<vk::Image>           swapChainImages;
-	std::vector<vk::raii::ImageView> swapChainImageViews;
-	vk::SurfaceFormatKHR             swapChainSurfaceFormat;
-	vk::Extent2D                     swapChainExtent;
+	vk::raii::SwapchainKHR               swapChain                      { nullptr };
+	vk::raii::Queue                      graphicsQueue                  { nullptr };
+	vk::raii::Queue                      presentQueue                   { nullptr };
+	std::vector<vk::Image>               swapChainImages;
+	std::vector<vk::raii::ImageView>     swapChainImageViews;
+	vk::SurfaceFormatKHR                 swapChainSurfaceFormat;
+	vk::Extent2D                         swapChainExtent;
 
 	// pipeline
-	vk::raii::PipelineLayout         pipelineLayout           { nullptr };
-	vk::raii::Pipeline               graphicsPipeline         { nullptr };
+	vk::raii::PipelineLayout             pipelineLayout                 { nullptr };
+	vk::raii::Pipeline                   graphicsPipeline               { nullptr };
 
 	// Commands
-	vk::raii::CommandPool            commandPool              { nullptr };
-	vk::raii::CommandBuffer          commandBuffer            { nullptr };
+	vk::raii::CommandPool                commandPool                    { nullptr };
+	std::vector<vk::raii::CommandBuffer> commandBuffers;
 
 	// Sync
-	vk::raii::Semaphore              presentCompleteSemaphore { nullptr };
-	vk::raii::Semaphore              renderFinishedSemaphore  { nullptr };
-	vk::raii::Fence                  drawFence                { nullptr };
+	std::vector<vk::raii::Semaphore>     imageAvailableSemaphores;
+	std::vector<vk::raii::Semaphore>     renderFinishedSemaphores;
+	std::vector<vk::raii::Fence>         inFlightFences;
+	grove::u32                           currentFrame                     { 0 };
+	const                                grove::u8 MAX_FRAMES_IN_FLIGHT { 2 };
 
 	#if defined(NDEBUG)
-	bool                             enableValidationLayers   { false };
+	bool                                 enableValidationLayers         { false };
 	#else
-	bool                             enableValidationLayers   { true };
+	bool                                 enableValidationLayers         { true };
 	#endif
 };
 
@@ -322,8 +325,8 @@ do { \
 		VK_INIT_STEP(CreateImageViews());
 		VK_INIT_STEP(CreateGraphicsPipeline());
 		VK_INIT_STEP(CreateCommandPool());
-		VK_INIT_STEP(CreateCommandBuffer());
-		CreateSyncObjects();
+		VK_INIT_STEP(CreateCommandBuffers());
+		VK_INIT_STEP(CreateSyncObjects());
 
 		return true;
 	}
@@ -449,7 +452,7 @@ do { \
 			deviceProps.apiVersion <= vk::ApiVersion13
 			)
 		{
-			GRV_LOG_WARN(GRV_CHANNEL(System), "event=vk.device.unsuitable deviceName=\"{}\" apiVersion={} missingQueues={} geometryShader={}",
+			GRV_LOG_WARN(GRV_CHANNEL(System), "event=vk.device.unsuitable deviceName='{}' apiVersion={} missingQueues={} geometryShader={}",
 				std::string_view{deviceProps.deviceName},
 				deviceProps.apiVersion,
 				!indices.IsComplete(),
@@ -828,62 +831,63 @@ do { \
 		return vk::Result::eSuccess;
 	}
 
-	vk::Result CreateCommandBuffer()
+	vk::Result CreateCommandBuffers()
 	{
+		vkContext_.commandBuffers.clear();
+
 		vk::CommandBufferAllocateInfo allocInfo{};
 		allocInfo
 			.setCommandPool(vkContext_.commandPool)
 			.setLevel(vk::CommandBufferLevel::ePrimary)
-			.setCommandBufferCount(1);
+			.setCommandBufferCount(vkContext_.MAX_FRAMES_IN_FLIGHT);
 
-		auto commandBuffer = vkContext_.device.allocateCommandBuffers(allocInfo);
-		VK_CHECK(commandBuffer, "vk.createCommandBuffer.failed");
+		auto commandBuffers = vkContext_.device.allocateCommandBuffers(allocInfo);
+		VK_CHECK(commandBuffers, "vk.createCommandBuffers.failed");
 
-		vkContext_.commandBuffer = std::move(commandBuffer->front());
-		GRV_LOG_INFO(GRV_CHANNEL(System), "event=vk.commandBuffer.created level={} bufferCount={}", vk::to_string(vk::CommandBufferLevel::ePrimary), 1);
+		vkContext_.commandBuffers = std::move(*commandBuffers);
+		GRV_LOG_INFO(GRV_CHANNEL(System), "event=vk.commandBuffers.created level={} bufferCount={}", vk::to_string(vk::CommandBufferLevel::ePrimary), 1);
 		return vk::Result::eSuccess;
 	}
 
-	void CreateSyncObjects()
+	vk::Result CreateSyncObjects()
 	{
-		auto presentCompleteSemaphore = vkContext_.device.createSemaphore(vk::SemaphoreCreateInfo());
-		if (!presentCompleteSemaphore)
-		{
-			GRV_LOG_ERROR(GRV_CHANNEL(System), "event=vk.createPresentCompleteSemaphore.failed result={}", vk::to_string(presentCompleteSemaphore.error()));
-		}
-		else
-		{
-			vkContext_.presentCompleteSemaphore = std::move(*presentCompleteSemaphore);
-		}
-
-		auto renderingFinishedSemaphore = vkContext_.device.createSemaphore(vk::SemaphoreCreateInfo());
-		if (!renderingFinishedSemaphore)
-		{
-			GRV_LOG_ERROR(GRV_CHANNEL(System), "event=vk.createRenderingFinishedSemaphore.failed result={}", vk::to_string(renderingFinishedSemaphore.error()));
-		}
-		else
-		{
-			vkContext_.renderFinishedSemaphore = std::move(*renderingFinishedSemaphore);
-		}
-
-		auto drawFence = vkContext_.device.createFence(
-			{
-				.flags = vk::FenceCreateFlagBits::eSignaled
-			}
+		GRV_ASSERT(
+			vkContext_.imageAvailableSemaphores.empty() &&
+			vkContext_.renderFinishedSemaphores.empty() &&
+			vkContext_.inFlightFences.empty()
 		);
-		if (!drawFence)
+
+		vk::SemaphoreCreateInfo semaphoreInfo{};
+
+		for (size_t i = 0; i < vkContext_.swapChainImages.size(); ++i)
 		{
-			GRV_LOG_ERROR(GRV_CHANNEL(System), "event=vk.createDrawFence.failed result={}", vk::to_string(drawFence.error()));
+			auto renderFinishedSemaphore = vkContext_.device.createSemaphore(semaphoreInfo);
+			VK_CHECK(renderFinishedSemaphore, "vk.createRenderFinishedSemaphore.failed");
+			vkContext_.renderFinishedSemaphores.emplace_back(std::move(*renderFinishedSemaphore));
 		}
-		else
+
+		for (size_t i = 0; i < vkContext_.MAX_FRAMES_IN_FLIGHT; ++i)
 		{
-			vkContext_.drawFence = std::move(*drawFence);
+			auto imageAvailableSemaphore = vkContext_.device.createSemaphore(semaphoreInfo);
+			VK_CHECK(imageAvailableSemaphore, "vk.createImageAvailableSemaphore.failed");
+			vkContext_.imageAvailableSemaphores.emplace_back(std::move(*imageAvailableSemaphore));
+
+			vk::FenceCreateInfo fenceInfo{ .flags = vk::FenceCreateFlagBits::eSignaled };
+			auto fence = vkContext_.device.createFence(fenceInfo);
+			VK_CHECK(fence, "vk.createInFlightFence.failed");
+			vkContext_.inFlightFences.emplace_back(std::move(*fence));
 		}
+
+		GRV_LOG_INFO(GRV_CHANNEL(System), "event=vk.syncObjects.created semaphoreCount={} fenceCount={}",
+			vkContext_.imageAvailableSemaphores.size() + vkContext_.renderFinishedSemaphores.size(),
+			vkContext_.inFlightFences.size());
+		return vk::Result::eSuccess;
 	}
 
 	void RecordCommandBuffer(grove::u32 imageIndex)
 	{
-		vkContext_.commandBuffer.begin({});
+		auto& commandBuffer = vkContext_.commandBuffers[vkContext_.currentFrame];
+		commandBuffer.begin({});
 
 		TransitionImageLayout(
 			imageIndex,
@@ -915,8 +919,8 @@ do { \
 			.setLayerCount(1)
 			.setColorAttachments(attachmentInfo);
 
-		vkContext_.commandBuffer.beginRendering(renderingInfo);
-		vkContext_.commandBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, vkContext_.graphicsPipeline);
+		commandBuffer.beginRendering(renderingInfo);
+		commandBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, vkContext_.graphicsPipeline);
 
 		vk::Viewport viewport
 		{
@@ -928,11 +932,11 @@ do { \
 			.maxDepth { 1.0f }
 		};
 
-		vkContext_.commandBuffer.setViewport(0, viewport);
-		vkContext_.commandBuffer.setScissor(0, vk::Rect2D(vk::Offset2D(0, 0), vkContext_.swapChainExtent));
-		vkContext_.commandBuffer.draw(3, 1, 0, 0);
+		commandBuffer.setViewport(0, viewport);
+		commandBuffer.setScissor(0, vk::Rect2D(vk::Offset2D(0, 0), vkContext_.swapChainExtent));
+		commandBuffer.draw(3, 1, 0, 0);
 
-		vkContext_.commandBuffer.endRendering();
+		commandBuffer.endRendering();
 
 		TransitionImageLayout(
 			imageIndex,
@@ -944,7 +948,7 @@ do { \
 			vk::PipelineStageFlagBits2::eBottomOfPipe
 		);
 
-		vkContext_.commandBuffer.end();
+		commandBuffer.end();
 	}
 
 	void TransitionImageLayout(
@@ -984,7 +988,7 @@ do { \
 			.setImageMemoryBarrierCount(1)
 			.setImageMemoryBarriers(barrier);
 
-		vkContext_.commandBuffer.pipelineBarrier2(dependencyInfo);
+		vkContext_.commandBuffers[vkContext_.currentFrame].pipelineBarrier2(dependencyInfo);
 	}
 
 	void MainLoop()
@@ -1005,40 +1009,37 @@ do { \
 
 	vk::Result DrawFrame()
 	{
-		vkContext_.graphicsQueue.waitIdle();
-		vkContext_.presentQueue.waitIdle();
+		auto fenceResult = vkContext_.device.waitForFences(*vkContext_.inFlightFences[vkContext_.currentFrame], vk::True, UINT64_MAX);
+		if (fenceResult != vk::Result::eSuccess)
+		{
+			GRV_LOG_ERROR(GRV_CHANNEL(System), "event=vk.waitForInFlightFences.failed result={}", vk::to_string(fenceResult));
+			return fenceResult;
+		}
+		vkContext_.device.resetFences(*vkContext_.inFlightFences[vkContext_.currentFrame]);
 
-		auto [result, imageIndex] = vkContext_.swapChain.acquireNextImage(UINT64_MAX, *vkContext_.presentCompleteSemaphore, nullptr);
+		auto [result, imageIndex] = vkContext_.swapChain.acquireNextImage(UINT64_MAX, *vkContext_.imageAvailableSemaphores[vkContext_.currentFrame], nullptr);
+		vkContext_.commandBuffers[vkContext_.currentFrame].reset();
 		RecordCommandBuffer(imageIndex);
-
-		vkContext_.device.resetFences(*vkContext_.drawFence);
 
 		// submit for drawing
 		vk::PipelineStageFlags waitDestinationStageMask(vk::PipelineStageFlagBits::eColorAttachmentOutput);
 		vk::SubmitInfo submitInfo{};
 		submitInfo
-			.setWaitSemaphores(*vkContext_.presentCompleteSemaphore)
+			.setWaitSemaphores(*vkContext_.imageAvailableSemaphores[vkContext_.currentFrame])
 			.setWaitDstStageMask(waitDestinationStageMask)
-			.setCommandBuffers(*vkContext_.commandBuffer)
-			.setSignalSemaphores(*vkContext_.renderFinishedSemaphore);
-
-		vkContext_.graphicsQueue.submit(submitInfo, *vkContext_.drawFence);
+			.setCommandBuffers(*vkContext_.commandBuffers[vkContext_.currentFrame])
+			.setSignalSemaphores(*vkContext_.renderFinishedSemaphores[imageIndex]);
+		vkContext_.graphicsQueue.submit(submitInfo, *vkContext_.inFlightFences[vkContext_.currentFrame]);
 
 		// submit for presentation
-		result = vkContext_.device.waitForFences(*vkContext_.drawFence, vk::True, UINT64_MAX);
-		if (result != vk::Result::eSuccess)
-		{
-			GRV_LOG_ERROR(GRV_CHANNEL(System), "event=vk.waitForDrawFence.failed result={}", vk::to_string(result));
-			return result;
-		}
-
 		vk::PresentInfoKHR presentInfoKHR{};
 		presentInfoKHR
-			.setWaitSemaphores(*vkContext_.renderFinishedSemaphore)
+			.setWaitSemaphores(*vkContext_.renderFinishedSemaphores[imageIndex])
 			.setSwapchains(*vkContext_.swapChain)
 			.setImageIndices(imageIndex);
-
 		result = vkContext_.presentQueue.presentKHR(presentInfoKHR);
+
+		vkContext_.currentFrame = (vkContext_.currentFrame + 1) % vkContext_.MAX_FRAMES_IN_FLIGHT;
 		return result;
 	}
 
@@ -1093,7 +1094,6 @@ do { \
 
 	vk::PresentModeKHR ChooseSwapPresentMode(const SwapChainSupportDetails& swapChainDetails, VSyncSetting vsyncSetting)
 	{
-
 		vk::PresentModeKHR requestedMode = ToPresentMode(vsyncSetting);
 
 		for (vk::PresentModeKHR presentMode : swapChainDetails.presentModes)

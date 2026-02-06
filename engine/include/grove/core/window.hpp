@@ -1,9 +1,8 @@
 #pragma once
-
-#include <string>
-#include <memory>
-
 #include "grove/core/typedefs.hpp"
+#include "grove/core/error/error.hpp"
+#include <memory>
+#include <string>
 
 namespace grove
 {
@@ -24,8 +23,7 @@ namespace grove
 		virtual u32 GetWidth() const = 0;
 		virtual u32 GetHeight() const = 0;
 
-
-		static std::unique_ptr<Window> Create(const WindowCreateInfo &create_info);
+		static Result<std::unique_ptr<Window>> Create(const WindowCreateInfo &create_info);
 
 		virtual void* GetNativeHandle() const = 0;
 	};

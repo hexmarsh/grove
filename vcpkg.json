@@ -1,24 +1,20 @@
 {
   "dependencies": [
     {
-      "name": "imgui",
-      "version>=": "1.91.9"
-    },
-    {
       "name": "glfw3",
       "version>=": "3.4#1"
     },
     {
       "name": "glm",
-      "version>=": "1.0.3#0"
+      "version>=": "1.0.3"
     },
     {
-      "name": "vulkan",
-      "version>=": "2023-12-17#0"
+      "name": "imgui",
+      "version>=": "1.91.9"
     },
     {
-      "name": "shader-slang",
-      "version>=": "2025.22.1"
+      "name": "spdlog",
+      "version>=": "1.17.0"
     }
   ]
 }

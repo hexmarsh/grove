@@ -1,22 +1,22 @@
 #pragma once
 #include "grove/core/window.hpp"
 
-#define USE_GLFW  1
-#define USE_WIN32 0
-
-#if USE_GLFW
 #include <GLFW/glfw3.h>
-#endif
 
-#include <windows.h>
+struct HWND__;
+using HWND = HWND__*;
+
+struct HINSTANCE__;
+using HINSTANCE = HINSTANCE__*;
 
 namespace grove
 {
-#if USE_GLFW
+	enum class Error;
+
 	class Win32Window : public Window
 	{
 	public:
-		Win32Window(const WindowCreateInfo& createInfo);
+		Win32Window();
 		~Win32Window() override;
 
 		void OnUpdate() override;
@@ -29,37 +29,11 @@ namespace grove
 		HINSTANCE GetHInstance() const;
 		HWND GetHWND() const;
 
+		Error Init(const WindowCreateInfo& createInfo);
 	private:
-		bool Init(const WindowCreateInfo& createInfo);
-		bool Shutdown();
+		void Shutdown();
 
 	private:
 		GLFWwindow* window_{ nullptr };
 	};
-#endif // USE_GLFW
-
-// Win32 api - Maybe continued later
-#if USE_WIN32
-	class Win32Window : public Window
-	{
-	public:
-		Win32Window(const WindowCreateInfo &createInfo);
-		~Win32Window() override;
-	
-		void *GetNativeHandle() const override;
-	
-		HINSTANCE GetHInstance() const { return hinstance_; }
-		HWND GetHWND() const { return hwnd_; }
-	
-	private:
-		void Init(const WindowCreateInfo &createInfo);
-		void Shutdown();
-	
-		LRESULT HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) const;
-		static LRESULT CALLBACK WindowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
-	
-		HWND hwnd_ = nullptr;
-		HINSTANCE hinstance_ = nullptr;
-	};
-#endif // USE_WIN32
 }
