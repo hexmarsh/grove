@@ -1,4 +1,5 @@
 #pragma once
+#include "grove/core/logging.hpp"
 #include "grove/core/error.hpp"
 
 #ifndef NDEBUG
@@ -51,23 +52,23 @@
 		} \
 	} while (0)
 
-#define GRV_ERR_IF(cond, ret) \
+#define GRV_ERR_IF(cond, error_enum) \
 	do \
 	{ \
 		if (cond) [[unlikely]] \
 		{ \
 			GRV_LOG_ERROR_FUNC("Condition '{}' is true.", #cond); \
-			return ret; \
+			return std::unexpected{ ::grove::Error::error_enum }; \
 		} \
 	} while (0)
 
-#define GRV_ERR_IF_MSG(cond, ret, fmt, ...) \
+#define GRV_ERR_IF_MSG(cond, error_enum, fmt, ...) \
 	do \
 	{ \
 		if (cond) [[unlikely]] \
 		{ \
 			GRV_LOG_ERROR_FUNC("Condition '{}' is true. " fmt, #cond __VA_OPT__(,) __VA_ARGS__); \
-			return ret; \
+			return std::unexpected{ ::grove::Error::error_enum }; \
 		} \
 	} while (0)
 
@@ -79,4 +80,38 @@
 			GRV_LOG_WARN_FUNC(__VA_ARGS__); \
 		} \
 	} while (0)
+
+#define GRV_TRY(expr) \
+	do \
+	{ \
+		auto&& __res = (expr); \
+		if (!__res) [[unlikely]] \
+		{ \
+			return std::unexpected(__res.error()); \
+		} \
+	} while (0)
+
+#define GRV_TRY_ELSE(expr, elseExpr) \
+	do \
+	{ \
+		auto&& __res = (expr); \
+		if (!__res) [[unlikely]] \
+		{ \
+			elseExpr; \
+			return std::unexpected(__res.error()); \
+		} \
+	} while (0)
+
+#define GRV_TRY_ASSIGN(lhs, rhs) \
+	do \
+	{ \
+		auto&& __res = (rhs); \
+		if (!__res) [[unlikely]] \
+		{ \
+			return std::unexpected(__res.error()); \
+		} \
+		lhs = std::move(*__res); \
+	} while (0)
+
+#define GRV_OK {}
 

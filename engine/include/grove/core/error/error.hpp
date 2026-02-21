@@ -5,14 +5,16 @@ namespace grove
 {
 	enum class Error
 	{
-		Ok,
 		Failed,
-		CantCreate
+		NotFound,
+		CantCreate,
+		FileCantOpen
 	};
 
 	using enum Error;
 
 	template<typename T>
 	using Result = std::expected<T, Error>;
+	using Status = Result<void>;
 }
 

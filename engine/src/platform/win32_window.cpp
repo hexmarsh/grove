@@ -24,6 +24,11 @@ namespace grove
 		glfwPollEvents();
 	}
 
+	bool Win32Window::ShouldClose()
+	{
+		return glfwWindowShouldClose(window_);
+	}
+
 	u32 Win32Window::GetWidth() const
 	{
 		int width;
@@ -45,17 +50,17 @@ namespace grove
 
 	HINSTANCE Win32Window::GetHInstance() const
 	{
-		GRV_ASSERT(!window_);
+		GRV_ASSERT(window_);
 		return GetModuleHandle(nullptr);
 	}
 
 	HWND Win32Window::GetHWND() const
 	{
-		GRV_ASSERT(!window_);
+		GRV_ASSERT(window_);
 		return glfwGetWin32Window(window_);
 	}
 
-	Error Win32Window::Init(const WindowCreateInfo& createInfo)
+	Status Win32Window::Init(const WindowCreateInfo& createInfo)
 	{
 		GRV_LOG_INFO("win32window.creating width='{}', height='{}'", createInfo.width, createInfo.height);
 
@@ -72,7 +77,7 @@ namespace grove
 		);
 		GRV_ERR_IF_MSG(!window_, CantCreate, "Failed to create GLFW Window");
 
-		return Ok;
+		return GRV_OK;
 	}
 
 	void Win32Window::Shutdown()

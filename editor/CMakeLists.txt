@@ -1,5 +1,5 @@
 add_executable(grove_editor
-	src/newmain.cpp
+	"src/main.cpp"
 )
 
 find_package(imgui CONFIG REQUIRED)

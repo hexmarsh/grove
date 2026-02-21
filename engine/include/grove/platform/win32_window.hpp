@@ -20,6 +20,7 @@ namespace grove
 		~Win32Window() override;
 
 		void OnUpdate() override;
+		bool ShouldClose() override;
 
 		u32 GetWidth() const override;
 		u32 GetHeight() const override;
@@ -29,7 +30,7 @@ namespace grove
 		HINSTANCE GetHInstance() const;
 		HWND GetHWND() const;
 
-		Error Init(const WindowCreateInfo& createInfo);
+		Status Init(const WindowCreateInfo& createInfo);
 	private:
 		void Shutdown();
 

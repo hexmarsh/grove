@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.21)
+cmake_minimum_required(VERSION 3.30)
 project(grove_engine LANGUAGES C CXX)
 
 # ============================================================
@@ -9,13 +9,13 @@ find_package(Vulkan QUIET)
 
 if (NOT Vulkan_FOUND)
     message(FATAL_ERROR
-        "Vulkan SDK (LunarG) was not found.\n"
-        "Please install the Vulkan SDK from:\n"
-        "  https://vulkan.lunarg.com/\n\n"
-        "After installation, make sure CMake can find it "
-        "(VULKAN_SDK environment variable is usually set automatically)."
+            "Vulkan SDK (LunarG) was not found.\n"
+            "Please install the Vulkan SDK from:\n"
+            "  https://vulkan.lunarg.com/\n\n"
+            "After installation, make sure CMake can find it "
+            "(VULKAN_SDK environment variable is usually set automatically)."
     )
-endif()
+endif ()
 
 # ============================================================
 # Engine library
@@ -28,44 +28,41 @@ add_library(grove_engine)
 # ------------------------------------------------------------
 
 set(GROVE_ENGINE_CORE_SOURCES
-    src/core/logging.cpp
-    src/core/window.cpp
-    src/core/application.cpp
-    src/core/grove_engine.cpp
+        src/core/logging.cpp
+        src/core/window.cpp
+        
+        "src/core/engine.cpp"
 )
 
 set(GROVE_ENGINE_PLATFORM_SOURCES
-    src/platform/win32_window.cpp
+        src/platform/win32_window.cpp
 )
 
 set(GROVE_ENGINE_VULKAN_SOURCES
-    src/rhi/vulkan/vulkan_context.cpp
-)
-
-set(GROVE_ENGINE_VOLK_SOURCE
-    $ENV{VULKAN_SDK}/Include/volk/volk.c
+        src/rhi/vulkan/vk_context.cpp
+        src/rhi/vulkan/vk_device.cpp
 )
 
 set_source_files_properties(${GROVE_ENGINE_VOLK_SOURCE} PROPERTIES LANGUAGE CXX)
 
 target_sources(grove_engine
-    PRIVATE
+        PRIVATE
         ${GROVE_ENGINE_CORE_SOURCES}
         ${GROVE_ENGINE_PLATFORM_SOURCES}
         ${GROVE_ENGINE_VULKAN_SOURCES}
         ${GROVE_ENGINE_VOLK_SOURCE}
- )
+)
 
 # ------------------------------------------------------------  
 # Include paths  
 # ------------------------------------------------------------  
 
-target_include_directories(grove_engine  
-    PUBLIC  
-        ${PROJECT_SOURCE_DIR}/include  
-        $ENV{VULKAN_SDK}/Include  
-    PRIVATE  
-        ${PROJECT_SOURCE_DIR}/src  
+target_include_directories(grove_engine
+        PUBLIC
+        ${PROJECT_SOURCE_DIR}/include
+        $ENV{VULKAN_SDK}/Include
+        PRIVATE
+        ${PROJECT_SOURCE_DIR}/src
 )
 
 # ------------------------------------------------------------
@@ -83,17 +80,23 @@ target_include_directories(grove_engine
 
 if (WIN32)
     target_compile_definitions(grove_engine
-        PUBLIC
+            PUBLIC
             NOMINMAX
             WIN32_LEAN_AND_MEAN
+            VULKAN_HPP_USE_STD_EXPECTED
+            VULKAN_HPP_NO_STRUCT_CONSTRUCTORS
+            VULKAN_HPP_NO_EXCEPTIONS
             VK_USE_PLATFORM_WIN32_KHR
+            VP_USE_OBJECT
     )
 
-    target_compile_options(grove_engine
-        PUBLIC
-            /Zc:preprocessor
-    )
-endif()
+    if (MSVC)
+        target_compile_options(grove_engine
+                PUBLIC
+                /Zc:preprocessor
+        )
+    endif ()
+endif ()
 
 # ============================================================
 # Dependencies
@@ -108,7 +111,7 @@ find_package(spdlog CONFIG REQUIRED)
 # ------------------------------------------------------------
 
 target_link_libraries(grove_engine
-    PUBLIC
+        PUBLIC
         Vulkan::Vulkan
         glm::glm
         glfw
@@ -122,7 +125,7 @@ target_link_libraries(grove_engine
 include(${CMAKE_SOURCE_DIR}/cmake/add_slang_target.cmake)
 
 add_slang_shader_target(spirv_shaders
-    SOURCES
+        SOURCES
         "${CMAKE_SOURCE_DIR}/engine/assets/shaders/shader.slang"
 )
 
@@ -131,10 +134,10 @@ add_slang_shader_target(spirv_shaders
 # ============================================================
 
 add_custom_target(copy_assets
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
         "${CMAKE_CURRENT_SOURCE_DIR}/assets"
         "${CMAKE_CURRENT_BINARY_DIR}/assets"
-    COMMENT "Copying assets to build directory"
+        COMMENT "Copying assets to build directory"
 )
 
 add_dependencies(copy_assets spirv_shaders)

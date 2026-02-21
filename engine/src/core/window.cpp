@@ -1,5 +1,6 @@
 #include "grove/core/config.hpp"
 #include "grove/core/window.hpp"
+#include "grove/core/error.hpp"
 
 #if GRV_PLATFORM_WINDOWS
 #include "grove/platform/win32_window.hpp"
@@ -12,10 +13,7 @@ namespace grove
 #if GRV_PLATFORM_WINDOWS
 		auto window = std::make_unique<Win32Window>();
 
-		if (Error err = window->Init(createInfo); err != Ok)
-		{
-			return std::unexpected(err);
-		}
+		GRV_TRY(window->Init(createInfo));
 
 		return window;
 #else
